@@ -29,7 +29,11 @@ import {
   Clock,
   Sparkles,
   ExternalLink,
+  Youtube,
+  Calendar,
 } from 'lucide-react';
+import { PublishModal } from '@/components/publishing/publish-modal';
+import { ScheduleModal } from '@/components/publishing/schedule-modal';
 import type { MediaTab, UnifiedMediaItem, StorageBreakdown } from '@/lib/media-manager';
 
 export default function MediaLibraryPage() {
@@ -50,6 +54,8 @@ export default function MediaLibraryPage() {
 
   // Modals state
   const [previewItem, setPreviewItem] = useState<UnifiedMediaItem | null>(null);
+  const [mediaPublishClip, setMediaPublishClip] = useState<any | null>(null);
+  const [mediaScheduleClip, setMediaScheduleClip] = useState<any | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<UnifiedMediaItem | null>(null);
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
   const [renameTarget, setRenameTarget] = useState<UnifiedMediaItem | null>(null);
@@ -743,31 +749,90 @@ export default function MediaLibraryPage() {
                 </div>
 
                 {/* Card Bottom: Quick Actions */}
-                <div className="flex items-center gap-1.5 pt-2 border-t border-border">
-                  <button
-                    onClick={() => setPreviewItem(item)}
-                    className="flex-1 py-1 px-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-[11px] font-semibold flex items-center justify-center gap-1"
-                  >
-                    <Eye className="w-3 h-3 text-primary" /> Preview
-                  </button>
+                <div className="space-y-1.5 pt-2 border-t border-border">
+                  {/* Row 1: Prominent Publishing Actions for Clips and Exports */}
+                  {(item.type === 'clip' || item.type === 'export' || item.status === 'rendered') && !isTrashTab && (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setMediaPublishClip({
+                          id: item.id,
+                          title: item.title,
+                          duration: item.duration,
+                          resolution: item.resolution,
+                          previewUrl: item.previewUrl,
+                          filePath: item.filePath,
+                        })}
+                        className="flex-1 py-1.5 px-2 rounded-lg bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-extrabold text-[11px] flex items-center justify-center gap-1 shadow-xs hover:opacity-95 transition-all"
+                      >
+                        <Youtube className="w-3.5 h-3.5" /> Publish Now
+                      </button>
 
-                  {isTrashTab ? (
-                    <button
-                      onClick={() => handleRestore(item.id)}
-                      className="py-1 px-2 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/25 text-[11px] font-bold"
-                      title="Restore"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => setDeleteTarget(item)}
-                      className="py-1 px-2 rounded-lg hover:bg-rose-500/15 text-muted-foreground hover:text-rose-500 text-[11px]"
-                      title="Delete"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setMediaScheduleClip({
+                          id: item.id,
+                          title: item.title,
+                          duration: item.duration,
+                          resolution: item.resolution,
+                          previewUrl: item.previewUrl,
+                          filePath: item.filePath,
+                        })}
+                        className="py-1.5 px-2.5 rounded-lg border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary font-bold text-[11px] flex items-center justify-center gap-1 transition-colors"
+                      >
+                        <Calendar className="w-3.5 h-3.5" /> Schedule
+                      </button>
+                    </div>
                   )}
+
+                  {/* Row 2: Secondary Utility Buttons */}
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setPreviewItem(item)}
+                      className="flex-1 py-1 px-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-[11px] font-semibold flex items-center justify-center gap-1"
+                    >
+                      <Eye className="w-3 h-3 text-primary" /> Preview
+                    </button>
+
+                    {item.previewUrl && (
+                      <a
+                        href={item.previewUrl}
+                        download={`${item.id}.mp4`}
+                        className="p-1 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground text-[11px]"
+                        title="Download MP4"
+                      >
+                        <Download className="w-3 h-3" />
+                      </a>
+                    )}
+
+                    {item.type === 'clip' && (
+                      <Link
+                        href={`/editor?clip=${item.id}`}
+                        className="p-1 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-primary text-[11px]"
+                        title="Edit in Video Editor"
+                      >
+                        <Scissors className="w-3 h-3" />
+                      </Link>
+                    )}
+
+                    {isTrashTab ? (
+                      <button
+                        onClick={() => handleRestore(item.id)}
+                        className="py-1 px-2 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/25 text-[11px] font-bold"
+                        title="Restore"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setDeleteTarget(item)}
+                        className="py-1 px-2 rounded-lg hover:bg-rose-500/15 text-muted-foreground hover:text-rose-500 text-[11px]"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             );
@@ -938,22 +1003,65 @@ export default function MediaLibraryPage() {
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
-              {previewItem.previewUrl && (
-                <a
-                  href={previewItem.previewUrl}
-                  download
-                  className="px-4 py-2 rounded-xl bg-muted hover:bg-muted/80 text-foreground text-xs font-semibold flex items-center gap-1.5"
+            {/* Prominent Publishing Action Buttons */}
+            <div className="pt-2 border-t border-border space-y-2">
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = previewItem;
+                    setPreviewItem(null);
+                    setMediaPublishClip({
+                      id: target.id,
+                      title: target.title,
+                      duration: target.duration,
+                      resolution: target.resolution,
+                      previewUrl: target.previewUrl,
+                      filePath: target.filePath,
+                    });
+                  }}
+                  className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-extrabold text-xs flex items-center justify-center gap-2 shadow-md hover:opacity-95"
                 >
-                  <Download className="w-3.5 h-3.5" /> Download
-                </a>
-              )}
-              <button
-                onClick={() => setPreviewItem(null)}
-                className="px-4 py-2 rounded-xl bg-primary text-[#194350] font-bold text-xs"
-              >
-                Close
-              </button>
+                  <Youtube className="w-4 h-4" /> PUBLISH NOW
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = previewItem;
+                    setPreviewItem(null);
+                    setMediaScheduleClip({
+                      id: target.id,
+                      title: target.title,
+                      duration: target.duration,
+                      resolution: target.resolution,
+                      previewUrl: target.previewUrl,
+                      filePath: target.filePath,
+                    });
+                  }}
+                  className="py-2.5 px-4 rounded-xl border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary font-extrabold text-xs flex items-center justify-center gap-2"
+                >
+                  <Calendar className="w-4 h-4" /> SCHEDULE
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-1 text-xs">
+                {previewItem.previewUrl && (
+                  <a
+                    href={previewItem.previewUrl}
+                    download
+                    className="px-4 py-1.5 rounded-xl bg-muted hover:bg-muted/80 text-foreground font-semibold flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Download MP4
+                  </a>
+                )}
+                <button
+                  onClick={() => setPreviewItem(null)}
+                  className="px-4 py-1.5 rounded-xl border border-border bg-card hover:bg-muted text-foreground font-semibold"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1122,6 +1230,32 @@ export default function MediaLibraryPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Publish Now Modal */}
+      {mediaPublishClip && (
+        <PublishModal
+          isOpen={Boolean(mediaPublishClip)}
+          onClose={() => setMediaPublishClip(null)}
+          clip={mediaPublishClip}
+          onSuccess={() => {
+            setMediaPublishClip(null);
+            loadMedia();
+          }}
+        />
+      )}
+
+      {/* Schedule Modal */}
+      {mediaScheduleClip && (
+        <ScheduleModal
+          isOpen={Boolean(mediaScheduleClip)}
+          onClose={() => setMediaScheduleClip(null)}
+          clip={mediaScheduleClip}
+          onSuccess={() => {
+            setMediaScheduleClip(null);
+            loadMedia();
+          }}
+        />
       )}
     </div>
   );

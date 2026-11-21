@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { mediaManager } from '@/lib/media-manager';
 import type { MediaTab } from '@/lib/media-manager';

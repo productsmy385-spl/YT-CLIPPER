@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { MasterAgentOrchestrator } from '@/agents/orchestrator';
 import { dbRepo } from '@/db/repository';

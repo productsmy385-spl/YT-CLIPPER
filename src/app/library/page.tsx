@@ -25,9 +25,12 @@ import {
   RefreshCw,
   FolderKanban,
   Flame,
+  Youtube,
 } from 'lucide-react';
 import { Pagination } from '@/components/ui/pagination';
 import { ScheduleCalendar, CalendarEvent } from '@/components/calendar/schedule-calendar';
+import { PublishModal } from '@/components/publishing/publish-modal';
+import { ScheduleModal } from '@/components/publishing/schedule-modal';
 import { cn } from '@/lib/utils';
 
 interface MediaItem {
@@ -105,6 +108,10 @@ function MediaLibraryContent() {
 
   // Video preview modal
   const [activePreview, setActivePreview] = useState<MediaItem | null>(null);
+
+  // Publishing & Scheduling modals
+  const [libraryPublishClip, setLibraryPublishClip] = useState<any | null>(null);
+  const [libraryScheduleClip, setLibraryScheduleClip] = useState<any | null>(null);
 
   // Deletion feedback
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -812,32 +819,69 @@ function MediaLibraryContent() {
                   </div>
 
                   {/* Actions Toolbar */}
-                  <div className="flex items-center justify-between pt-2 border-t border-border gap-1">
-                    <button
-                      onClick={() => setActivePreview(item)}
-                      className="px-2 py-1 rounded-lg border border-border bg-background hover:bg-muted text-[11px] font-semibold text-foreground flex items-center gap-1 transition-colors"
-                    >
-                      <Eye className="w-3 h-3" /> Preview
-                    </button>
-
-                    <div className="flex items-center gap-1">
-                      {item.media_type === 'rendered' && (
-                        <Link
-                          href={`/editor?clip=${item.id}`}
-                          className="px-2 py-1 rounded-lg border border-border bg-background hover:bg-muted text-[11px] font-semibold text-foreground flex items-center gap-1 transition-colors"
-                          title="Open in Video Editor"
+                  <div className="space-y-1.5 pt-2 border-t border-border">
+                    {/* Row 1: Primary Publishing Actions */}
+                    {item.media_type === 'rendered' && (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setLibraryPublishClip({
+                            id: item.id,
+                            title: item.title,
+                            duration: item.duration,
+                            resolution: item.resolution,
+                            previewUrl: item.preview_url,
+                            filePath: item.file_path,
+                          })}
+                          className="flex-1 py-1.5 px-2 rounded-lg bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-extrabold text-[11px] flex items-center justify-center gap-1 shadow-xs hover:opacity-95 transition-all"
                         >
-                          <Scissors className="w-3 h-3 text-primary" />
-                        </Link>
+                          <Youtube className="w-3.5 h-3.5" /> Publish Now
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setLibraryScheduleClip({
+                            id: item.id,
+                            title: item.title,
+                            duration: item.duration,
+                            resolution: item.resolution,
+                            previewUrl: item.preview_url,
+                            filePath: item.file_path,
+                          })}
+                          className="py-1.5 px-2.5 rounded-lg border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary font-bold text-[11px] flex items-center justify-center gap-1 transition-colors"
+                        >
+                          <CalendarIcon className="w-3.5 h-3.5" /> Schedule
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Row 2: Secondary Utility Buttons */}
+                    <div className="flex items-center justify-between gap-1 text-[11px]">
+                      <button
+                        onClick={() => setActivePreview(item)}
+                        className="flex-1 px-2 py-1 rounded-lg border border-border bg-background hover:bg-muted font-semibold text-foreground flex items-center justify-center gap-1 transition-colors"
+                      >
+                        <Eye className="w-3 h-3 text-primary" /> Preview
+                      </button>
+
+                      {item.preview_url && (
+                        <a
+                          href={item.preview_url}
+                          download={`${item.id}_short.mp4`}
+                          className="px-2 py-1 rounded-lg border border-border bg-background hover:bg-muted font-semibold text-foreground flex items-center gap-1 transition-colors"
+                          title="Download MP4"
+                        >
+                          <Download className="w-3 h-3 text-muted-foreground" />
+                        </a>
                       )}
 
                       {item.media_type === 'rendered' && (
                         <Link
-                          href={`/export?clip=${item.id}`}
-                          className="px-2 py-1 rounded-lg border border-primary/30 bg-primary/15 text-primary hover:bg-primary/25 text-[11px] font-bold flex items-center gap-1 transition-colors"
-                          title="Publish or Schedule Short"
+                          href={`/editor?clip=${item.id}`}
+                          className="px-2 py-1 rounded-lg border border-border bg-background hover:bg-muted font-semibold text-foreground flex items-center gap-1 transition-colors"
+                          title="Open in Video Editor"
                         >
-                          <Share2 className="w-3 h-3" />
+                          <Scissors className="w-3 h-3 text-primary" />
                         </Link>
                       )}
 
@@ -895,7 +939,7 @@ function MediaLibraryContent() {
               </button>
             </div>
 
-            <div className="aspect-[9/16] max-h-[520px] bg-black rounded-xl overflow-hidden flex items-center justify-center mx-auto">
+            <div className="aspect-[9/16] max-h-[460px] bg-black rounded-xl overflow-hidden flex items-center justify-center mx-auto border border-border">
               <video
                 src={activePreview.preview_url}
                 controls
@@ -905,27 +949,126 @@ function MediaLibraryContent() {
               />
             </div>
 
-            <div className="flex items-center justify-between pt-2 border-t border-border text-xs">
-              <span className="text-muted-foreground">
-                Duration: <strong className="text-foreground">{formatDuration(activePreview.duration)}</strong>
-              </span>
-              <div className="flex items-center gap-2">
-                <Link
-                  href={`/editor?clip=${activePreview.id}`}
-                  className="px-3 py-1.5 rounded-lg border border-border bg-background hover:bg-muted font-bold text-foreground text-xs"
+            {/* Video Metadata Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs bg-muted/40 p-2.5 rounded-xl border border-border">
+              <div>
+                <span className="text-[10px] text-muted-foreground uppercase block font-semibold">Duration</span>
+                <span className="font-bold font-mono text-foreground">{formatDuration(activePreview.duration)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-muted-foreground uppercase block font-semibold">Resolution</span>
+                <span className="font-bold font-mono text-foreground">{activePreview.resolution || '1080x1920'}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-muted-foreground uppercase block font-semibold">Created</span>
+                <span className="font-medium text-foreground">
+                  {activePreview.created_at ? new Date(activePreview.created_at).toLocaleDateString() : 'Today'}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] text-muted-foreground uppercase block font-semibold">Status</span>
+                <span className="font-bold uppercase text-primary">{activePreview.status || 'READY'}</span>
+              </div>
+            </div>
+
+            {/* Prominent Publishing Buttons in Preview */}
+            <div className="pt-2 border-t border-border space-y-2">
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = activePreview;
+                    setActivePreview(null);
+                    setLibraryPublishClip({
+                      id: target.id,
+                      title: target.title,
+                      duration: target.duration,
+                      resolution: target.resolution,
+                      previewUrl: target.preview_url,
+                      filePath: target.file_path,
+                    });
+                  }}
+                  className="py-2.5 px-4 rounded-xl bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-extrabold text-xs flex items-center justify-center gap-2 shadow-md hover:opacity-95"
                 >
-                  Fine-Tune in Editor
-                </Link>
-                <Link
-                  href={`/export?clip=${activePreview.id}`}
-                  className="px-3 py-1.5 rounded-lg bg-primary text-[#194350] font-bold text-xs"
+                  <Youtube className="w-4 h-4" /> PUBLISH NOW
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const target = activePreview;
+                    setActivePreview(null);
+                    setLibraryScheduleClip({
+                      id: target.id,
+                      title: target.title,
+                      duration: target.duration,
+                      resolution: target.resolution,
+                      previewUrl: target.preview_url,
+                      filePath: target.file_path,
+                    });
+                  }}
+                  className="py-2.5 px-4 rounded-xl border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary font-extrabold text-xs flex items-center justify-center gap-2"
                 >
-                  Publish &amp; Schedule
-                </Link>
+                  <CalendarIcon className="w-4 h-4" /> SCHEDULE
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between text-xs pt-1">
+                <div className="flex items-center gap-2">
+                  {activePreview.preview_url && (
+                    <a
+                      href={activePreview.preview_url}
+                      download={`${activePreview.id}_short.mp4`}
+                      className="px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted font-semibold text-foreground flex items-center gap-1.5"
+                    >
+                      <Download className="w-3.5 h-3.5 text-muted-foreground" /> Download
+                    </a>
+                  )}
+
+                  <Link
+                    href={`/editor?clip=${activePreview.id}`}
+                    className="px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted font-bold text-foreground text-xs"
+                  >
+                    Fine-Tune in Editor
+                  </Link>
+                </div>
+
+                <button
+                  onClick={() => setActivePreview(null)}
+                  className="px-3 py-1.5 text-muted-foreground hover:text-foreground font-semibold"
+                >
+                  Close
+                </button>
               </div>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Publish Now Modal */}
+      {libraryPublishClip && (
+        <PublishModal
+          isOpen={Boolean(libraryPublishClip)}
+          onClose={() => setLibraryPublishClip(null)}
+          clip={libraryPublishClip}
+          onSuccess={() => {
+            setLibraryPublishClip(null);
+            fetchLibrary();
+          }}
+        />
+      )}
+
+      {/* Schedule Modal */}
+      {libraryScheduleClip && (
+        <ScheduleModal
+          isOpen={Boolean(libraryScheduleClip)}
+          onClose={() => setLibraryScheduleClip(null)}
+          clip={libraryScheduleClip}
+          onSuccess={() => {
+            setLibraryScheduleClip(null);
+            fetchLibrary();
+          }}
+        />
       )}
     </div>
   );

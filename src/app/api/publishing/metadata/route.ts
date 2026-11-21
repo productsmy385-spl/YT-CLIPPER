@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { aiMetadataAgent } from '@/agents/12-metadata-agent';
 import { dbRepo } from '@/db/repository';

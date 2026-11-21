@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { dbRepo } from '@/db/repository';
 import { STORAGE_AVATARS_DIR } from '@/lib/app-paths';

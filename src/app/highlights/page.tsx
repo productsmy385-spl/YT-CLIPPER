@@ -26,8 +26,11 @@ import {
   CheckSquare,
   Square,
   Layers,
+  Youtube,
 } from 'lucide-react';
 import { Pagination } from '@/components/ui/pagination';
+import { PublishModal } from '@/components/publishing/publish-modal';
+import { ScheduleModal } from '@/components/publishing/schedule-modal';
 
 function HighlightsContent() {
   const searchParams = useSearchParams();
@@ -40,6 +43,10 @@ function HighlightsContent() {
   const [total, setTotal] = useState(0);
   const [previewModes, setPreviewModes] = useState<Record<string, 'edited' | 'raw'>>({});
   const [actionFeedback, setActionFeedback] = useState<Record<string, string>>({});
+
+  // Publishing & Scheduling modal targets
+  const [selectedPublishClip, setSelectedPublishClip] = useState<any | null>(null);
+  const [selectedScheduleClip, setSelectedScheduleClip] = useState<any | null>(null);
 
   // Multi-selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -547,11 +554,58 @@ function HighlightsContent() {
 
                 {/* Actions */}
                 <div className="space-y-2 pt-2 border-t border-border">
+                  {/* Row 1: Clear & Prominent Publishing Buttons */}
+                  <div className="flex items-center gap-1.5">
+                    {clip.is_published === 1 || clip.published_url ? (
+                      <a
+                        href={clip.published_url || `https://www.youtube.com/shorts/${clip.youtube_video_id || 'watch'}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex-1 py-1.5 px-3 rounded-lg bg-rose-500 hover:bg-rose-600 text-white font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-colors"
+                      >
+                        <Youtube className="w-3.5 h-3.5" /> View on YouTube
+                      </a>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedPublishClip({
+                            id: clip.id,
+                            title: clip.title,
+                            duration: clip.duration,
+                            resolution: '1080x1920',
+                            previewUrl: activeVideoSrc,
+                            filePath: clip.output_path || clip.raw_clip_path,
+                          })}
+                          className="flex-1 py-1.5 px-3 rounded-lg bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-extrabold text-xs flex items-center justify-center gap-1.5 shadow-xs hover:opacity-95 transition-all"
+                        >
+                          <Youtube className="w-3.5 h-3.5" /> Publish Now
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setSelectedScheduleClip({
+                            id: clip.id,
+                            title: clip.title,
+                            duration: clip.duration,
+                            resolution: '1080x1920',
+                            previewUrl: activeVideoSrc,
+                            filePath: clip.output_path || clip.raw_clip_path,
+                          })}
+                          className="py-1.5 px-3 rounded-lg border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary font-bold text-xs flex items-center justify-center gap-1 transition-colors"
+                        >
+                          <Calendar className="w-3.5 h-3.5" /> Schedule
+                        </button>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Row 2: Secondary Utility Buttons */}
                   <div className="grid grid-cols-4 gap-1.5">
                     <button
                       type="button"
                       onClick={() => handleStatusChange(clip.id, 'approved')}
-                      className="py-1.5 rounded-md bg-[#9dbeb8]/15 hover:bg-[#9dbeb8]/25 text-[#9dbeb8] font-bold text-xs flex items-center justify-center gap-1"
+                      className="py-1 rounded-md bg-[#9dbeb8]/15 hover:bg-[#9dbeb8]/25 text-[#9dbeb8] font-bold text-[11px] flex items-center justify-center gap-1"
                     >
                       <CheckCircle2 className="w-3 h-3" /> Approve
                     </button>
@@ -559,39 +613,32 @@ function HighlightsContent() {
                     <button
                       type="button"
                       onClick={() => handleStatusChange(clip.id, 'rejected')}
-                      className="py-1.5 rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 font-bold text-xs flex items-center justify-center gap-1"
+                      className="py-1 rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 font-bold text-[11px] flex items-center justify-center gap-1"
                     >
                       <XCircle className="w-3 h-3" /> Reject
                     </button>
 
                     <Link
                       href={`/editor?clip=${clip.id}`}
-                      className="py-1.5 rounded-md bg-muted hover:bg-muted/80 text-foreground font-bold text-xs flex items-center justify-center gap-1 border border-border"
+                      className="py-1 rounded-md bg-muted hover:bg-muted/80 text-foreground font-bold text-[11px] flex items-center justify-center gap-1 border border-border"
                     >
-                      <Scissors className="w-3 h-3" /> Edit
+                      <Scissors className="w-3 h-3 text-primary" /> Edit
                     </Link>
 
                     {clip.finalPreviewUrl ? (
                       <a
                         href={clip.finalPreviewUrl}
                         download={`${clip.id}_short.mp4`}
-                        className="py-1.5 rounded-md bg-muted hover:bg-muted/80 text-foreground font-bold text-xs flex items-center justify-center gap-1 border border-border"
+                        className="py-1 rounded-md bg-muted hover:bg-muted/80 text-foreground font-bold text-[11px] flex items-center justify-center gap-1 border border-border"
                       >
                         <Download className="w-3 h-3" /> Save
                       </a>
                     ) : (
-                      <button disabled className="py-1.5 rounded-md bg-muted opacity-40 text-xs">
+                      <button disabled className="py-1 rounded-md bg-muted opacity-40 text-[11px]">
                         Save
                       </button>
                     )}
                   </div>
-
-                  <Link
-                    href={`/publishing?publishNow=${clip.id}`}
-                    className="w-full py-1.5 rounded-md bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-bold text-xs flex items-center justify-center gap-1 shadow-sm hover:opacity-95"
-                  >
-                    <Share2 className="w-3.5 h-3.5" /> Publish to Shorts & Reels
-                  </Link>
                 </div>
               </div>
             );
@@ -731,6 +778,33 @@ function HighlightsContent() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Publish Now Modal */}
+      {selectedPublishClip && (
+        <PublishModal
+          isOpen={Boolean(selectedPublishClip)}
+          onClose={() => setSelectedPublishClip(null)}
+          clip={selectedPublishClip}
+          onSuccess={() => {
+            setSelectedPublishClip(null);
+            fetch(`/api/clips?page=${page}&pageSize=${pageSize}&projectId=${selectedProjectId}`)
+              .then((res) => res.json())
+              .then((data) => setClips(data.clips || []));
+          }}
+        />
+      )}
+
+      {/* Schedule Modal */}
+      {selectedScheduleClip && (
+        <ScheduleModal
+          isOpen={Boolean(selectedScheduleClip)}
+          onClose={() => setSelectedScheduleClip(null)}
+          clip={selectedScheduleClip}
+          onSuccess={() => {
+            setSelectedScheduleClip(null);
+          }}
+        />
       )}
     </div>
   );

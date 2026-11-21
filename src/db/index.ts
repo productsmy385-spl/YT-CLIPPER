@@ -5,11 +5,15 @@ import { DB_PATH } from '../lib/app-paths.ts';
 
 export const rawDb = new DatabaseSync(DB_PATH);
 
-// Enable WAL mode and busy timeout for high performance concurrency
-rawDb.exec('PRAGMA journal_mode = WAL;');
-rawDb.exec('PRAGMA synchronous = NORMAL;');
-rawDb.exec('PRAGMA foreign_keys = ON;');
-rawDb.exec('PRAGMA busy_timeout = 10000;');
+// Enable busy timeout FIRST so any concurrent worker waits up to 30s instead of throwing 'database is locked'
+try {
+  rawDb.exec('PRAGMA busy_timeout = 30000;');
+  rawDb.exec('PRAGMA journal_mode = WAL;');
+  rawDb.exec('PRAGMA synchronous = NORMAL;');
+  rawDb.exec('PRAGMA foreign_keys = ON;');
+} catch (e: any) {
+  console.warn('[DatabaseSync] Pragma init note:', e?.message);
+}
 
 // Initialize Normalized Schema (21 tables matching architecture)
 export function initDatabase() {

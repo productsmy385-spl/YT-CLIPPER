@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { youtubeOAuth } from '@/lib/youtube/oauth';
 import { instagramClient } from '@/lib/publishing/instagram-client';

@@ -70,12 +70,15 @@ export async function POST(req: NextRequest) {
     }
 
     // ================= DUPLICATE QUEUE JOB PREVENTION =================
-    // If a project is already active with the identical source, resume/return that project instead of creating duplicate jobs
+    // If a project is actively in-progress with the identical source file within recent heartbeat window, return it (idempotency)
     const activeProjects = dbRepo.listProjects() as any[];
+    const nowMs = Date.now();
     const existingActive = activeProjects.find((p) => {
-      const sameSource = (sourceUrl && p.source_url === sourceUrl) || (sourceFile && p.source_file === sourceFile);
-      const isRunning = p.status === 'in_progress' || p.status === 'created';
-      return sameSource && isRunning;
+      const sameSource = sourceFile ? p.source_file === sourceFile : (sourceUrl && p.source_url === sourceUrl);
+      if (!sameSource) return false;
+      if (p.status !== 'in_progress') return false;
+      const lastActivity = new Date(p.heartbeat_at || p.updated_at || p.created_at).getTime();
+      return (nowMs - lastActivity) < 60000; // genuinely active within last 60 seconds
     });
 
     if (existingActive) {

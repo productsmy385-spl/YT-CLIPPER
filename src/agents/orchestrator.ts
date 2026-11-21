@@ -230,10 +230,12 @@ export class MasterAgentOrchestrator {
           throw new Error(err);
         }
 
-        // Check if an authorized stream file already exists on disk for this videoId
-        const existingFile = videoIngestionEngine.findAuthorizedSourceFile(yt.videoId);
-        if (existingFile && fs.existsSync(existingFile)) {
-          validatedSourcePath = existingFile;
+        // Only look for existing authorized stream if no explicit source recording was supplied
+        if (!validatedSourcePath) {
+          const existingFile = videoIngestionEngine.findAuthorizedSourceFile(yt.videoId);
+          if (existingFile && fs.existsSync(existingFile)) {
+            validatedSourcePath = existingFile;
+          }
         }
 
         if (!validatedSourcePath || !fs.existsSync(validatedSourcePath)) {

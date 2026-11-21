@@ -28,17 +28,20 @@ async function main() {
 
   // STEP 1: Generate 2 Distinct Authorized Test Recordings
   console.log('--- STEP 1: GENERATING 2 DISTINCT AUTHORIZED RECORDINGS ---');
-  const rec1Path = path.resolve(STORAGE_DIR, 'test_authorized_rec_1.mp4');
-  const rec2Path = path.resolve(STORAGE_DIR, 'test_authorized_rec_2.mp4');
+  const runSeed = Date.now();
+  const freq1 = 510 + (runSeed % 70);
+  const freq2 = 730 + (runSeed % 70);
+  const rec1Path = path.resolve(STORAGE_DIR, `test_authorized_rec_1_${runSeed}.mp4`);
+  const rec2Path = path.resolve(STORAGE_DIR, `test_authorized_rec_2_${runSeed}.mp4`);
 
-  // Video 1: 15 seconds, orange (#FF7700), 520Hz tone
-  console.log('Generating Video 1 (15s, orange, 520Hz)...');
+  // Video 1: 15 seconds, orange (#FF7700), unique freq tone
+  console.log(`Generating Video 1 (15s, orange, ${freq1}Hz)...`);
   spawnSync(
     'ffmpeg',
     [
       '-y',
       '-f', 'lavfi', '-i', 'color=c=0xFF7700:s=1280x720:d=15:r=25',
-      '-f', 'lavfi', '-i', 'sine=frequency=520:duration=15',
+      '-f', 'lavfi', '-i', `sine=frequency=${freq1}:duration=15`,
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '128k',
       rec1Path,
@@ -46,14 +49,14 @@ async function main() {
     { stdio: 'ignore' }
   );
 
-  // Video 2: 22 seconds, purple (#7700FF), 750Hz tone
-  console.log('Generating Video 2 (22s, purple, 750Hz)...');
+  // Video 2: 22 seconds, purple (#7700FF), unique freq tone
+  console.log(`Generating Video 2 (22s, purple, ${freq2}Hz)...`);
   spawnSync(
     'ffmpeg',
     [
       '-y',
       '-f', 'lavfi', '-i', 'color=c=0x7700FF:s=1280x720:d=22:r=25',
-      '-f', 'lavfi', '-i', 'sine=frequency=750:duration=22',
+      '-f', 'lavfi', '-i', `sine=frequency=${freq2}:duration=22`,
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '128k',
       rec2Path,

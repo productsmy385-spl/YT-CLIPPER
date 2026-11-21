@@ -249,6 +249,7 @@ export const ffmpegCore = {
     const sourceMeta = this.probe(sourceClip);
 
     const inputs: string[] = ['-y', '-i', sourceClip];
+    let nextInputIdx = 1;
     const filterParts: string[] = [];
 
     // --- VIDEO PIPELINE ---
@@ -258,7 +259,7 @@ export const ffmpegCore = {
       // Foreground: 100% full original gameplay scaled to 1080 width, centered vertically at (H-h)/2
       // This guarantees 100% of game HUD, weapons, radar, streamer cam, and stunt action remain completely visible!
       filterParts.push(
-        `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg]`,
+        `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:2[bg]`,
         `[0:v]scale=1080:-1[fg]`,
         `[bg][fg]overlay=(W-w)/2:(H-h)/2[v_base]`
       );
@@ -273,7 +274,7 @@ export const ffmpegCore = {
     let currentV = '[v_base]';
     if (memeOverlayPath && fs.existsSync(memeOverlayPath)) {
       inputs.push('-i', memeOverlayPath);
-      const memeIdx = inputs.length / 2 - 1;
+      const memeIdx = nextInputIdx++;
       filterParts.push(
         `[${memeIdx}:v]scale=320:320[meme_scaled]`,
         `${currentV}[meme_scaled]overlay=W-w-30:90:enable='between(t,${memeStart},${memeStart + memeDuration})'[v_meme]`
@@ -301,7 +302,7 @@ export const ffmpegCore = {
       // BGM with auto-ducking (low volume, smooth in/out)
       if (bgmPath && fs.existsSync(bgmPath)) {
         inputs.push('-i', bgmPath);
-        const bgmIdx = inputs.length / 2 - 1;
+        const bgmIdx = nextInputIdx++;
         filterParts.push(
           `[${bgmIdx}:a]aformat=channel_layouts=stereo:sample_rates=48000,aloop=loop=-1:size=2880000,atrim=0:${duration},volume=${bgmVolume},afade=t=in:ss=0:d=1,afade=t=out:st=${duration - 1.5}:d=1.5[bgm_ducked]`
         );
@@ -312,7 +313,7 @@ export const ffmpegCore = {
       sfxEvents.forEach((sfx, idx) => {
         if (fs.existsSync(sfx.sfxPath)) {
           inputs.push('-i', sfx.sfxPath);
-          const sfxIdx = inputs.length / 2 - 1;
+          const sfxIdx = nextInputIdx++;
           const delayMs = Math.round(sfx.timestamp * 1000);
           filterParts.push(
             `[${sfxIdx}:a]aformat=channel_layouts=stereo:sample_rates=48000,adelay=${delayMs}|${delayMs},volume=${sfx.volume}[sfx_${idx}]`
@@ -345,7 +346,7 @@ export const ffmpegCore = {
       '-map', '[a_out]',
       '-t', String(duration),
       '-c:v', 'libx264',
-      '-preset', 'veryfast',
+      '-preset', 'ultrafast',
       '-crf', '19',
       '-pix_fmt', 'yuv420p',
       '-c:a', 'aac',
@@ -354,7 +355,7 @@ export const ffmpegCore = {
       outputPath,
     ];
 
-    const res = spawnSync(FFMPEG, args, { encoding: 'utf8', maxBuffer: 100 * 1024 * 1024 });
+    const res = spawnSync(FFMPEG, args, { encoding: 'utf8', maxBuffer: 100 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
     if (res.status !== 0) {
       throw new Error(`Vertical render failed: ${res.stderr}`);
     }

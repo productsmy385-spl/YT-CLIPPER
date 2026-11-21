@@ -457,16 +457,16 @@ export const fullVideoAnalyzer = {
       selected.push(mergedCandidates[0]);
     }
 
-    // Limit to top 8 clips
-    const finalSelected = selected.slice(0, 8);
+    // Limit to top 3 high-impact viral clips per project
+    const finalSelected = selected.slice(0, 3);
 
     // Sort chronologically for narrative progression
     finalSelected.sort((a, b) => a.startTime - b.startTime);
 
     console.log(
-      `[HighlightEngine] ✓ Selected ${selected.length} story-based long-form clips (${preset} target, all viral scores >= 75):`
+      `[HighlightEngine] ✓ Selected ${finalSelected.length} story-based viral clips (${preset} target, all viral scores >= 75):`
     );
-    selected.forEach((h, idx) => {
+    finalSelected.forEach((h, idx) => {
       console.log(
         `   ${idx + 1}. [Viral Score: ${h.entertainmentScore}] [${h.categoryLabel}] ${this.formatTimestamp(
           h.startTime
@@ -474,7 +474,7 @@ export const fullVideoAnalyzer = {
       );
     });
 
-    return selected;
+    return finalSelected;
   },
 
   getRecommendedSoundForCategory(category: string): string {

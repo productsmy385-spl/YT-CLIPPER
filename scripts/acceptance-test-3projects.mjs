@@ -126,7 +126,7 @@ async function runProjectAcceptance(label, sourceFile, sourceHash) {
   });
 
   // Verify Project Status
-  const projectInDb = dbRepo.getProjectById(projectId);
+  const projectInDb = dbRepo.getProject(projectId);
   console.log(`  Project DB Status: ${projectInDb.status} (Progress: ${projectInDb.progress}%)`);
 
   // Verify Source Video Record in DB

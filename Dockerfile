@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS base
+FROM node:22-bookworm-slim AS base
 
 # Install system dependencies including ffmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \

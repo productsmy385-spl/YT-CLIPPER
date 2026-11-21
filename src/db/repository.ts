@@ -28,6 +28,16 @@ export const dbRepo = {
     return stmt.get(id);
   },
 
+  getProjectBySourceChecksum(checksum: string) {
+    if (!checksum) return null;
+    const stmt = rawDb.prepare(`
+      SELECT * FROM projects 
+      WHERE source_checksum = ? AND (is_deleted = 0 OR is_deleted IS NULL)
+      ORDER BY created_at DESC LIMIT 1
+    `);
+    return stmt.get(checksum) as any;
+  },
+
   listProjects() {
     const stmt = rawDb.prepare(`SELECT * FROM projects WHERE is_deleted = 0 OR is_deleted IS NULL ORDER BY created_at DESC`);
     const rows = stmt.all() as any[];

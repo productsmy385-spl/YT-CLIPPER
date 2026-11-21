@@ -30,11 +30,36 @@ import {
   Layers,
   Sliders,
   Scissors,
+  AlertTriangle,
+  FileVideo,
+  Zap,
 } from 'lucide-react';
 import { formatBytes, formatDuration } from '@/lib/utils';
 
 interface UploadedMetadata {
   filePath: string;
+  fileName: string;
+  fileSize: number;
+  duration: number;
+  width: number;
+  height: number;
+  fps: number;
+  hasAudio: boolean;
+  audioChannels: number;
+  audioCodec?: string;
+  checksum?: string;
+  videoId?: string;
+}
+
+interface DuplicateConfirmation {
+  existingProject: {
+    id: string;
+    title: string;
+    status: string;
+    createdAt: string;
+  };
+  filePath: string;
+  checksum: string;
   fileName: string;
   fileSize: number;
   duration: number;
@@ -107,6 +132,8 @@ const WORKFLOW_STAGES = [
 export default function CreateShortsPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
+  const isSubmittingRef = useRef(false);
 
   // Source selection state - Starts completely empty!
   const [sourceMode, setSourceMode] = useState<'youtube' | 'upload'>('youtube');
@@ -116,12 +143,16 @@ export default function CreateShortsPage() {
 
   // Local file upload state
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [clientFileMeta, setClientFileMeta] = useState<{ duration: number; width: number; height: number } | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadBytes, setUploadBytes] = useState<{ loaded: number; total: number } | null>(null);
   const [uploadedData, setUploadedData] = useState<UploadedMetadata | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [duplicateConfirmation, setDuplicateConfirmation] = useState<DuplicateConfirmation | null>(null);
+  const [autoStartOnUpload, setAutoStartOnUpload] = useState(true);
 
   // Step 2: Editing preferences - Starts clean
   const [title, setTitle] = useState<string>('');
@@ -169,6 +200,7 @@ export default function CreateShortsPage() {
               if (p.status === 'in_progress' || p.status === 'created') {
                 setActiveProjectId(savedProjectId);
                 setIsSubmitting(true);
+                isSubmittingRef.current = true;
                 setProgressPercent(p.progress || 2);
                 setCurrentStage(p.current_stage || 'Validating source link');
                 if (p.stage_id) setCurrentStageId(String(p.stage_id));
@@ -177,7 +209,6 @@ export default function CreateShortsPage() {
                 sessionStorage.removeItem('gta6_active_project_id');
               } else if (p.status === 'ready' || p.status === 'completed') {
                 sessionStorage.removeItem('gta6_active_project_id');
-                // Form stays clean and empty
               } else {
                 sessionStorage.removeItem('gta6_active_project_id');
               }
@@ -242,6 +273,7 @@ export default function CreateShortsPage() {
           setProgressPercent(100);
           setCurrentStage('All videos successfully exported & verified');
           setIsSubmitting(false);
+          isSubmittingRef.current = false;
           setActiveProjectId(null);
           try {
             sessionStorage.removeItem('gta6_active_project_id');
@@ -252,12 +284,15 @@ export default function CreateShortsPage() {
           setTitle('');
           setYtMeta(null);
           setSelectedFile(null);
+          setClientFileMeta(null);
           setUploadedData(null);
+          setDuplicateConfirmation(null);
           if (previewUrl) {
             URL.revokeObjectURL(previewUrl);
             setPreviewUrl(null);
           }
           setUploadProgress(0);
+          setUploadBytes(null);
           setUploadError(null);
 
           // Trigger completion notification banner
@@ -269,6 +304,7 @@ export default function CreateShortsPage() {
         } else if (proj.status === 'cancelled') {
           clearInterval(interval);
           setIsSubmitting(false);
+          isSubmittingRef.current = false;
           setIsCancelled(true);
           setActiveProjectId(null);
           try {
@@ -277,6 +313,7 @@ export default function CreateShortsPage() {
         } else if (proj.status === 'error') {
           clearInterval(interval);
           setIsSubmitting(false);
+          isSubmittingRef.current = false;
           setActiveProjectId(null);
           setSubmitError(proj.error_message || proj.current_stage || 'Video processing encountered an error. Please verify the source file.');
           try {
@@ -337,14 +374,19 @@ export default function CreateShortsPage() {
   };
 
   const processSelectedFile = (file: File) => {
-    if (!file.type.startsWith('video/') && !file.name.match(/\.(mp4|mov|webm|mkv)$/i)) {
-      setUploadError('Please select a valid video container (.mp4, .mov, .webm)');
+    const lowerName = file.name.toLowerCase();
+    const isValid = lowerName.endsWith('.mp4') || lowerName.endsWith('.mov') || lowerName.endsWith('.webm') || lowerName.endsWith('.mkv') || file.type.startsWith('video/');
+    if (!isValid) {
+      setUploadError('Please select a valid video container (.mp4, .mov, or .webm)');
       return;
     }
 
     setUploadError(null);
+    setDuplicateConfirmation(null);
     setSelectedFile(file);
-    setTitle(file.name.replace(/\.[^/.]+$/, ''));
+    if (!title || title.trim().length === 0) {
+      setTitle(file.name.replace(/\.[^/.]+$/, ''));
+    }
 
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl);
@@ -352,35 +394,83 @@ export default function CreateShortsPage() {
     const localUrl = URL.createObjectURL(file);
     setPreviewUrl(localUrl);
 
+    // Read client-side duration & resolution via video element
+    const tempVideo = document.createElement('video');
+    tempVideo.preload = 'metadata';
+    tempVideo.src = localUrl;
+    tempVideo.onloadedmetadata = () => {
+      setClientFileMeta({
+        duration: tempVideo.duration || 0,
+        width: tempVideo.videoWidth || 0,
+        height: tempVideo.videoHeight || 0,
+      });
+    };
+
     uploadFileToServer(file);
   };
 
-  const uploadFileToServer = async (file: File): Promise<UploadedMetadata | null> => {
+  const cancelUpload = () => {
+    if (uploadXhrRef.current) {
+      uploadXhrRef.current.abort();
+      uploadXhrRef.current = null;
+    }
+    setUploading(false);
+    setUploadProgress(0);
+    setUploadBytes(null);
+    setSelectedFile(null);
+    setClientFileMeta(null);
+    setUploadError('Upload cancelled by user.');
+  };
+
+  const uploadFileToServer = async (file: File, confirmReuse = false): Promise<UploadedMetadata | null> => {
     setUploading(true);
     setUploadProgress(0);
+    setUploadBytes(null);
     setUploadError(null);
+    setDuplicateConfirmation(null);
 
     return new Promise((resolve) => {
       const xhr = new XMLHttpRequest();
+      uploadXhrRef.current = xhr;
       const formData = new FormData();
       formData.append('video', file);
+      if (ytMeta?.videoId) {
+        formData.append('videoId', ytMeta.videoId);
+      }
+      if (confirmReuse) {
+        formData.append('confirmReuse', 'true');
+      }
 
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) {
           const percent = Math.round((event.loaded / event.total) * 100);
           setUploadProgress(percent);
+          setUploadBytes({ loaded: event.loaded, total: event.total });
         }
       };
 
       xhr.onload = () => {
         setUploading(false);
+        uploadXhrRef.current = null;
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const data = JSON.parse(xhr.responseText);
+            if (data.requiresConfirmation && data.existingProject) {
+              setDuplicateConfirmation(data);
+              resolve(null);
+              return;
+            }
             if (data.success && data.filePath) {
               setUploadedData(data);
               setUploadProgress(100);
               resolve(data);
+
+              // Auto-start pipeline if enabled and not already running
+              if (autoStartOnUpload && !isSubmittingRef.current) {
+                setTimeout(() => {
+                  startAutomationWithSource(data.filePath);
+                }, 400);
+              }
             } else {
               setUploadError(data.error || 'Server failed to inspect video stream.');
               resolve(null);
@@ -390,14 +480,27 @@ export default function CreateShortsPage() {
             resolve(null);
           }
         } else {
-          setUploadError(`Upload failed with status ${xhr.status}`);
+          try {
+            const errData = JSON.parse(xhr.responseText);
+            setUploadError(errData.error || `Upload failed with status ${xhr.status}`);
+          } catch {
+            setUploadError(`Upload failed with status ${xhr.status}`);
+          }
           resolve(null);
         }
       };
 
       xhr.onerror = () => {
         setUploading(false);
-        setUploadError('Network error during file upload.');
+        uploadXhrRef.current = null;
+        setUploadError('Network error during file upload. Please verify your connection.');
+        resolve(null);
+      };
+
+      xhr.onabort = () => {
+        setUploading(false);
+        uploadXhrRef.current = null;
+        setUploadError('Upload cancelled.');
         resolve(null);
       };
 
@@ -406,46 +509,39 @@ export default function CreateShortsPage() {
     });
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleConfirmDuplicate = () => {
+    if (!duplicateConfirmation) return;
+    const confirmedData: UploadedMetadata = {
+      filePath: duplicateConfirmation.filePath,
+      checksum: duplicateConfirmation.checksum,
+      fileName: duplicateConfirmation.fileName,
+      fileSize: duplicateConfirmation.fileSize,
+      duration: duplicateConfirmation.duration,
+      width: duplicateConfirmation.width,
+      height: duplicateConfirmation.height,
+      fps: duplicateConfirmation.fps,
+      hasAudio: duplicateConfirmation.hasAudio,
+      audioChannels: duplicateConfirmation.audioChannels,
+      audioCodec: duplicateConfirmation.audioCodec,
+    };
+    setUploadedData(confirmedData);
+    setDuplicateConfirmation(null);
 
-    // Disable duplicate submission while active
-    if (isSubmitting) return;
+    if (autoStartOnUpload && !isSubmittingRef.current) {
+      setTimeout(() => {
+        startAutomationWithSource(confirmedData.filePath);
+      }, 300);
+    }
+  };
+
+  const startAutomationWithSource = async (sourceFilePath: string) => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
 
     setSubmitError(null);
     setCompletedProject(null);
     setIsCancelled(false);
 
-    let resolvedSourceFile: string | undefined = undefined;
-
-    if (sourceMode === 'upload') {
-      if (!uploadedData && !selectedFile) {
-        setSubmitError('Please select or drag-and-drop a video file.');
-        return;
-      }
-
-      if (!uploadedData && selectedFile) {
-        setIsSubmitting(true);
-        setCurrentStage('Uploading video source to server...');
-        const uploaded = await uploadFileToServer(selectedFile);
-        if (!uploaded) {
-          setSubmitError('Failed to upload video source. Please try again.');
-          setIsSubmitting(false);
-          return;
-        }
-        resolvedSourceFile = uploaded.filePath;
-      } else if (uploadedData) {
-        resolvedSourceFile = uploadedData.filePath;
-      }
-    } else {
-      if (!youtubeUrl.trim()) {
-        setSubmitError('Please enter a YouTube video or stream link.');
-        return;
-      }
-      resolvedSourceFile = uploadedData?.filePath || ytMeta?.filePath || undefined;
-    }
-
-    // Immediately show responsive loading state
     setIsSubmitting(true);
     setProgressPercent(1);
     setCurrentStage('Initiating multi-agent pipeline...');
@@ -457,8 +553,8 @@ export default function CreateShortsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: title.trim() || undefined,
-          sourceUrl: sourceMode === 'youtube' ? youtubeUrl.trim() : undefined,
-          sourceFile: resolvedSourceFile,
+          sourceUrl: sourceMode === 'youtube' && youtubeUrl.trim() ? youtubeUrl.trim() : undefined,
+          sourceFile: sourceFilePath,
           preset: {
             durationPreset,
             memeIntensity,
@@ -481,16 +577,65 @@ export default function CreateShortsPage() {
       } else {
         setSubmitError(data.error || 'Failed to initialize project automation.');
         setIsSubmitting(false);
+        isSubmittingRef.current = false;
       }
     } catch (err: any) {
       setSubmitError(err.message || 'Network error initiating workflow.');
       setIsSubmitting(false);
+      isSubmittingRef.current = false;
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmittingRef.current || isSubmitting) return;
+
+    setSubmitError(null);
+    setCompletedProject(null);
+    setIsCancelled(false);
+
+    let resolvedSourceFile: string | undefined = undefined;
+
+    if (sourceMode === 'upload') {
+      if (!uploadedData && !selectedFile) {
+        setSubmitError('Please select or drag-and-drop an authorized video file.');
+        return;
+      }
+
+      if (!uploadedData && selectedFile) {
+        setIsSubmitting(true);
+        setCurrentStage('Uploading video source to server...');
+        const uploaded = await uploadFileToServer(selectedFile);
+        if (!uploaded) {
+          setSubmitError('Failed to upload video source. Please try again.');
+          setIsSubmitting(false);
+          return;
+        }
+        resolvedSourceFile = uploaded.filePath;
+      } else if (uploadedData) {
+        resolvedSourceFile = uploadedData.filePath;
+      }
+    } else {
+      if (!youtubeUrl.trim()) {
+        setSubmitError('Please enter a YouTube video or stream link.');
+        return;
+      }
+      if (!uploadedData && !ytMeta?.filePath) {
+        setSubmitError('An authorized video recording must be attached before extraction can begin.');
+        return;
+      }
+      resolvedSourceFile = uploadedData?.filePath || ytMeta?.filePath;
+    }
+
+    if (resolvedSourceFile) {
+      startAutomationWithSource(resolvedSourceFile);
     }
   };
 
   const handleCancelJob = async () => {
     if (!activeProjectId) {
       setIsSubmitting(false);
+      isSubmittingRef.current = false;
       setCancelModalOpen(false);
       return;
     }
@@ -504,6 +649,7 @@ export default function CreateShortsPage() {
       if (data.success) {
         setIsCancelled(true);
         setIsSubmitting(false);
+        isSubmittingRef.current = false;
         setActiveProjectId(null);
         setCurrentStage('Processing cancelled by user');
         try {
@@ -535,7 +681,7 @@ export default function CreateShortsPage() {
           Create Shorts & Reels
         </h1>
         <p className="text-xs text-muted-foreground mt-0.5">
-          Autonomous multi-agent gaming video pipeline: highlight detection, smart 9:16 framing, meme audio ducking, and auto-publishing.
+          Automated YouTube-to-AI-Shorts platform: verified source ingestion, highlight detection, smart 9:16 framing, meme audio ducking, and YouTube publishing.
         </p>
 
         {/* 7-Stage Workflow Roadmap */}
@@ -699,47 +845,30 @@ export default function CreateShortsPage() {
                 return (
                   <div
                     key={stg.id}
-                    className={`flex items-start gap-2.5 p-2 rounded-xl border text-xs transition-all ${
+                    className={`p-2.5 rounded-lg border transition-all flex items-start gap-2.5 text-xs ${
                       isActive
-                        ? 'border-primary bg-primary/10 shadow-sm'
+                        ? 'border-primary/50 bg-primary/10 shadow-sm'
                         : isDone
-                        ? 'border-emerald-500/30 bg-emerald-500/5'
-                        : 'border-border bg-muted/20 opacity-60'
+                        ? 'border-emerald-500/30 bg-emerald-500/5 opacity-90'
+                        : 'border-border/60 bg-muted/20 opacity-60'
                     }`}
                   >
                     <div className="mt-0.5 shrink-0">
                       {isDone ? (
-                        <div className="w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center">
-                          <Check className="w-2.5 h-2.5 stroke-[3]" />
-                        </div>
+                        <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                       ) : isActive ? (
-                        <div className="w-4 h-4 rounded-full bg-primary text-[#194350] flex items-center justify-center animate-pulse">
-                          <RefreshCw className="w-2.5 h-2.5 animate-spin" />
-                        </div>
+                        <RefreshCw className="w-4 h-4 text-primary animate-spin" />
                       ) : (
-                        <div className="w-4 h-4 rounded-full border border-border text-[10px] text-muted-foreground font-bold flex items-center justify-center">
+                        <div className="w-4 h-4 rounded-full border border-border flex items-center justify-center text-[10px] text-muted-foreground">
                           {stg.id}
                         </div>
                       )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-1">
-                        <span
-                          className={`font-bold truncate text-[11px] ${
-                            isActive
-                              ? 'text-primary'
-                              : isDone
-                              ? 'text-foreground'
-                              : 'text-muted-foreground'
-                          }`}
-                        >
-                          {stg.label}
-                        </span>
-                        <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground shrink-0">
-                          {isDone ? 'Completed' : isActive ? 'Active' : 'Pending'}
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-muted-foreground truncate">{stg.desc}</p>
+                    <div className="min-w-0">
+                      <p className={`font-bold truncate ${isActive ? 'text-primary' : isDone ? 'text-emerald-500' : 'text-foreground'}`}>
+                        {stg.id}. {stg.label}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground line-clamp-1">{stg.desc}</p>
                     </div>
                   </div>
                 );
@@ -813,7 +942,7 @@ export default function CreateShortsPage() {
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
-                Local Upload
+                Direct File Upload
               </button>
             </div>
           </div>
@@ -834,7 +963,7 @@ export default function CreateShortsPage() {
                         verifyYouTubeUrl(youtubeUrl);
                       }
                     }}
-                    placeholder="Paste YouTube gameplay link (e.g. https://www.youtube.com/watch?v=...)"
+                    placeholder="Paste YouTube gaming video or stream link (e.g. https://www.youtube.com/watch?v=...)"
                     className="w-full rounded-lg border border-border bg-input pl-9 pr-9 py-2 text-xs text-foreground focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"
                   />
                   {youtubeUrl && (
@@ -844,6 +973,9 @@ export default function CreateShortsPage() {
                         setYoutubeUrl('');
                         setYtMeta(null);
                         setTitle('');
+                        setUploadedData(null);
+                        setSelectedFile(null);
+                        setDuplicateConfirmation(null);
                       }}
                       className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
                       title="Clear URL"
@@ -869,23 +1001,23 @@ export default function CreateShortsPage() {
 
               {/* YouTube Metadata Preview Card */}
               {ytMeta && (
-                <div className="p-3.5 rounded-lg border border-border bg-muted/40 space-y-2.5">
-                  <div className="flex items-start gap-3">
+                <div className="p-3.5 rounded-xl border border-border bg-muted/40 space-y-3">
+                  <div className="flex flex-col sm:flex-row items-start gap-3">
                     {ytMeta.thumbnailUrl && (
                       <img
                         src={ytMeta.thumbnailUrl}
                         alt="Thumbnail"
-                        className="w-24 aspect-video rounded-md object-cover border border-border shrink-0 bg-muted"
+                        className="w-full sm:w-28 aspect-video rounded-lg object-cover border border-border shrink-0 bg-muted"
                       />
                     )}
                     <div className="flex-1 min-w-0 space-y-1">
                       <div className="flex items-center gap-1.5 flex-wrap">
                         {ytMeta.metadataRetrieved ? (
-                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30">
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30">
                             METADATA VERIFIED
                           </span>
                         ) : (
-                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30">
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30">
                             VALIDATION NOTICE
                           </span>
                         )}
@@ -893,70 +1025,212 @@ export default function CreateShortsPage() {
                           {ytMeta.authorName || 'Gaming Streamer'}
                         </span>
                       </div>
-                      <h4 className="font-bold text-xs text-foreground truncate">
+                      <h4 className="font-bold text-xs sm:text-sm text-foreground truncate">
                         {ytMeta.title?.toLowerCase().includes('invalid') ? 'YouTube Source Validation Notice' : ytMeta.title}
                       </h4>
                       <p className="text-[11px] text-muted-foreground">
-                        Video ID: <span className="font-mono text-foreground font-bold">{ytMeta.videoId || 'Not Extracted'}</span>
+                        YouTube ID: <span className="font-mono text-foreground font-bold">{ytMeta.videoId || 'Not Extracted'}</span>
                       </p>
-                      {ytMeta.errorMessage && (
-                        <p className="text-[11px] text-amber-700 dark:text-amber-400 font-medium">
-                          {ytMeta.errorMessage}
-                        </p>
-                      )}
                     </div>
                   </div>
 
-                  {/* Source Acquisition Guarantee & Recording Attachment */}
-                  <div className="pt-2.5 border-t border-border space-y-2 text-xs">
+                  {/* ================= SOURCE ACQUISITION & ATTACHMENT CARD ================= */}
+                  <div className="pt-2 border-t border-border space-y-2.5">
+                    {/* STATE 1: Verified recording already attached */}
                     {uploadedData ? (
-                      <div className="p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 flex items-center justify-between text-emerald-700 dark:text-emerald-400">
-                        <div className="flex items-center gap-2">
-                          <CheckCircle2 className="w-4 h-4 shrink-0" />
-                          <span className="font-semibold">
-                            Original recording attached: {uploadedData.fileName} ({formatBytes(uploadedData.fileSize)})
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setUploadedData(null)}
-                          className="text-[11px] underline hover:no-underline font-bold text-muted-foreground hover:text-foreground"
-                        >
-                          Change
-                        </button>
-                      </div>
-                    ) : ytMeta.filePath && ytMeta.canProcess ? (
-                      <div className="p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 flex items-center gap-2 text-emerald-700 dark:text-emerald-400">
-                        <CheckCircle2 className="w-4 h-4 shrink-0" />
-                        <span className="font-semibold">
-                          Authorized stream recording found on server: {ytMeta.filePath.split(/[\\/]/).pop()}
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <div className="p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 flex items-start gap-2 text-amber-700 dark:text-amber-400">
-                          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div className="p-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
+                        <div className="flex items-start gap-2.5">
+                          <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
                           <div>
-                            <span className="font-semibold block">
-                              Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.
-                            </span>
-                            <span className="text-[10px] text-muted-foreground block mt-0.5">
-                              YouTube Data API supplies metadata only. To respect content ownership and platform terms, attach your genuine gameplay recording.
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="font-extrabold text-foreground">
+                                Authorized Recording Attached: {uploadedData.fileName}
+                              </span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                                VERIFIED
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">
+                              {formatDuration(uploadedData.duration)} • {uploadedData.width}×{uploadedData.height} • {formatBytes(uploadedData.fileSize)} • {uploadedData.hasAudio ? 'Stereo Audio OK' : 'No Audio'}
+                            </p>
+                            {uploadedData.checksum && (
+                              <p className="text-[10px] font-mono text-muted-foreground mt-0.5 truncate max-w-sm">
+                                SHA-256: {uploadedData.checksum}
+                              </p>
+                            )}
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
                           <button
                             type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            disabled={uploading}
-                            className="px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted text-foreground text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm"
+                            onClick={() => {
+                              setUploadedData(null);
+                              setSelectedFile(null);
+                              setClientFileMeta(null);
+                              setDuplicateConfirmation(null);
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg border border-border bg-card hover:bg-muted text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
                           >
-                            <Upload className="w-3.5 h-3.5 text-primary" />
-                            <span>{uploading ? `Uploading (${uploadProgress}%)...` : 'Attach Original Recording (.mp4, .mov)'}</span>
+                            Replace File
                           </button>
-                          {uploadError && <span className="text-red-500 text-[11px] font-semibold">{uploadError}</span>}
+                        </div>
+                      </div>
+                    ) : duplicateConfirmation ? (
+                      /* STATE 2: Duplicate recording detected across projects - Confirmation Gate */
+                      <div className="p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/10 space-y-2.5 text-xs">
+                        <div className="flex items-start gap-2.5">
+                          <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                          <div>
+                            <span className="font-extrabold text-foreground block">
+                              Recording Previously Processed
+                            </span>
+                            <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                              This exact video recording was previously processed in project{' '}
+                              <span className="font-bold text-foreground">&quot;{duplicateConfirmation.existingProject.title}&quot;</span>.
+                              Do you want to attach it anyway to generate a new, independent project?
+                            </p>
+                            <p className="text-[10px] font-mono text-muted-foreground mt-1">
+                              File: {duplicateConfirmation.fileName} ({formatBytes(duplicateConfirmation.fileSize)}, {formatDuration(duplicateConfirmation.duration)})
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={handleConfirmDuplicate}
+                            className="px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-sm transition-colors flex items-center gap-1.5"
+                          >
+                            <Check className="w-3.5 h-3.5 stroke-[3]" />
+                            <span>Confirm & Attach Anyway</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDuplicateConfirmation(null);
+                              setSelectedFile(null);
+                              setClientFileMeta(null);
+                            }}
+                            className="px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            Choose Different File
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* STATE 3: Clear, intuitive Upload Dropzone (Replaces old warning banner) */
+                      <div className="space-y-2.5">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
+                          <div>
+                            <span className="font-bold text-foreground flex items-center gap-1.5">
+                              <FileVideo className="w-4 h-4 text-primary" />
+                              Attach Authorized Original Recording
+                            </span>
+                            <span className="text-[11px] text-muted-foreground block mt-0.5">
+                              YouTube Data API provides metadata only. Upload your authentic recording (.mp4, .mov) corresponding to this video.
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-semibold text-muted-foreground shrink-0 self-start sm:self-auto">
+                            MP4 / MOV (Up to 4K / 60fps)
+                          </span>
+                        </div>
+
+                        {/* Interactive Drag-and-Drop Area */}
+                        <div
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            setIsDragging(true);
+                          }}
+                          onDragLeave={() => setIsDragging(false)}
+                          onDrop={handleFileDrop}
+                          onClick={() => fileInputRef.current?.click()}
+                          className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all ${
+                            isDragging
+                              ? 'border-primary bg-primary/10 scale-[1.005]'
+                              : 'border-border hover:border-primary/50 bg-card hover:bg-muted/30'
+                          }`}
+                        >
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept="video/mp4,video/quicktime,video/webm,video/x-matroska"
+                            onChange={handleFileInputChange}
+                            className="hidden"
+                          />
+                          <Upload className="w-6 h-6 mx-auto text-primary mb-1.5" />
+                          <p className="text-xs font-bold text-foreground">
+                            Drag & drop recording file here or <span className="text-primary underline">browse</span>
+                          </p>
+                          <p className="text-[11px] text-muted-foreground mt-0.5">
+                            Desktop & mobile supported • Lossless frame & audio verification via FFprobe
+                          </p>
+                        </div>
+
+                        {/* Upload Progress Bar & Bytes Indicator */}
+                        {uploading && (
+                          <div className="space-y-1.5 p-3 rounded-xl border border-primary/30 bg-primary/5 text-xs animate-fade-in">
+                            <div className="flex justify-between items-center text-muted-foreground font-semibold">
+                              <span className="flex items-center gap-1.5 text-foreground">
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary" />
+                                Uploading {selectedFile?.name}...
+                              </span>
+                              <span className="font-mono font-bold text-primary">{uploadProgress}%</span>
+                            </div>
+                            <div className="w-full h-2 bg-muted rounded-full overflow-hidden border border-border">
+                              <div
+                                className="h-full bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] transition-all duration-200"
+                                style={{ width: `${Math.max(uploadProgress, 5)}%` }}
+                              />
+                            </div>
+                            <div className="flex justify-between items-center text-[10px] text-muted-foreground">
+                              <span>
+                                {uploadBytes ? `${formatBytes(uploadBytes.loaded)} of ${formatBytes(uploadBytes.total)}` : 'Verifying video stream...'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={cancelUpload}
+                                className="text-red-500 hover:underline font-bold"
+                              >
+                                Cancel Upload
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Upload Error Banner with Retry */}
+                        {uploadError && (
+                          <div className="p-2.5 rounded-lg border border-red-500/30 bg-red-500/10 flex items-center justify-between text-xs text-red-600 dark:text-red-400">
+                            <div className="flex items-center gap-2">
+                              <AlertCircle className="w-4 h-4 shrink-0" />
+                              <span>{uploadError}</span>
+                            </div>
+                            {selectedFile && (
+                              <button
+                                type="button"
+                                onClick={() => uploadFileToServer(selectedFile)}
+                                className="px-2.5 py-1 rounded border border-red-500/40 bg-card hover:bg-muted text-[11px] font-bold text-foreground"
+                              >
+                                Retry Upload
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Auto-Start AI Pipeline Toggle */}
+                        <div className="pt-1 flex items-center gap-2 text-xs">
+                          <label className="flex items-center gap-2 cursor-pointer select-none text-muted-foreground hover:text-foreground">
+                            <input
+                              type="checkbox"
+                              checked={autoStartOnUpload}
+                              onChange={(e) => setAutoStartOnUpload(e.target.checked)}
+                              className="rounded border-border text-primary focus:ring-primary w-3.5 h-3.5"
+                            />
+                            <span className="flex items-center gap-1 font-semibold text-[11px]">
+                              <Zap className="w-3.5 h-3.5 text-primary" />
+                              Automatically start AI Shorts extraction upon successful upload
+                            </span>
+                          </label>
                         </div>
                       </div>
                     )}
@@ -966,7 +1240,7 @@ export default function CreateShortsPage() {
             </div>
           )}
 
-          {/* Mode B: Local Upload */}
+          {/* Mode B: Direct Local Upload */}
           {sourceMode === 'upload' && (
             <div className="space-y-3">
               <div
@@ -990,7 +1264,7 @@ export default function CreateShortsPage() {
                   onChange={handleFileInputChange}
                   className="hidden"
                 />
-                <Upload className="w-8 h-8 mx-auto text-muted-foreground mb-2" />
+                <Upload className="w-8 h-8 mx-auto text-primary mb-2" />
                 <p className="text-xs font-bold text-foreground">
                   Drag and drop authorized GTA 6 gameplay recording
                 </p>
@@ -1023,11 +1297,50 @@ export default function CreateShortsPage() {
                       <p className="text-[11px] text-muted-foreground">
                         {formatDuration(uploadedData.duration)} • {uploadedData.width}×{uploadedData.height} • {formatBytes(uploadedData.fileSize)}
                       </p>
+                      {uploadedData.checksum && (
+                        <p className="text-[10px] font-mono text-muted-foreground truncate max-w-sm">
+                          SHA-256: {uploadedData.checksum}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30">
                     VERIFIED STREAM
                   </span>
+                </div>
+              )}
+
+              {duplicateConfirmation && (
+                <div className="p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/10 space-y-2.5 text-xs">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-extrabold text-foreground block">
+                        Recording Previously Processed
+                      </span>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                        This video recording was previously processed in project{' '}
+                        <span className="font-bold text-foreground">&quot;{duplicateConfirmation.existingProject.title}&quot;</span>.
+                        Do you want to attach it anyway for a new independent project?
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleConfirmDuplicate}
+                      className="px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-sm transition-colors"
+                    >
+                      Confirm & Attach Anyway
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDuplicateConfirmation(null)}
+                      className="px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1136,9 +1449,9 @@ export default function CreateShortsPage() {
         </div>
 
         {/* ================= STEP 3: SUBMIT ================= */}
-        <div className="flex items-center justify-between pt-2">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <ShieldCheck className="w-4 h-4 text-primary" />
+            <ShieldCheck className="w-4 h-4 text-primary shrink-0" />
             <span>Original Streamer Audio & Gameplay 100% Preserved</span>
           </div>
 
@@ -1149,18 +1462,23 @@ export default function CreateShortsPage() {
               (sourceMode === 'upload' && !uploadedData && !selectedFile) ||
               (sourceMode === 'youtube' && (!youtubeUrl.trim() || (!uploadedData && !ytMeta?.filePath)))
             }
-            className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-extrabold text-xs shadow-md shadow-[#ff8882]/20 hover:opacity-95 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-extrabold text-xs shadow-md shadow-[#ff8882]/20 hover:opacity-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isSubmitting ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
                 <span>Processing Pipeline Active...</span>
               </>
-            ) : (
+            ) : uploadedData || (sourceMode === 'youtube' && ytMeta?.filePath) ? (
               <>
                 <Sparkles className="w-4 h-4" />
                 <span>Start Automation</span>
                 <ArrowRight className="w-3.5 h-3.5 stroke-[3]" />
+              </>
+            ) : (
+              <>
+                <Upload className="w-4 h-4" />
+                <span>Attach Recording to Start</span>
               </>
             )}
           </button>

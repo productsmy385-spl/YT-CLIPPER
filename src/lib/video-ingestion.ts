@@ -303,9 +303,9 @@ export const videoIngestionEngine = {
   findAuthorizedSourceFile(videoId?: string): string | null {
     if (!videoId) return null;
 
+    // Only search authorized source repository; never automatically scavenge upload caches or other projects
     const searchDirs = [
       AUTHORIZED_SOURCES_DIR,
-      STORAGE_UPLOADS_DIR,
     ];
 
     for (const dir of searchDirs) {

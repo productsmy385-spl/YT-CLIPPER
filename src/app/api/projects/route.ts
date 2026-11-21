@@ -2,9 +2,10 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { dbRepo } from '@/db/repository';
 import { MasterAgentOrchestrator } from '@/agents/orchestrator';
-import { videoIngestionEngine } from '@/lib/video-ingestion';
+import { videoIngestionEngine, computeFileChecksum } from '@/lib/video-ingestion';
 import { mediaManager } from '@/lib/media-manager';
-import { SAMPLES_DIR } from '@/lib/app-paths';
+import { getProjectStoragePaths } from '@/lib/app-paths';
+import { ffmpegCore } from '@/lib/ffmpeg-core';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -106,13 +107,20 @@ export async function POST(req: NextRequest) {
     if (!initialVideoPath && sourceUrl) {
       const parsedYt = videoIngestionEngine.parseYouTubeUrl(sourceUrl);
       const existingFile = videoIngestionEngine.findAuthorizedSourceFile(parsedYt.videoId);
+
       if (existingFile && fs.existsSync(existingFile)) {
         initialVideoPath = existingFile;
-      } else if (pairAuthorizedStream !== false) {
-        const sampleStream = path.resolve(SAMPLES_DIR, 'gta6_authorized_gameplay_sample.mp4');
-        if (fs.existsSync(sampleStream)) {
-          initialVideoPath = sampleStream;
-        }
+      } else {
+        // YouTube Data API provides metadata only; actual video file must be supplied
+        return NextResponse.json(
+          {
+            error: 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.',
+            errorState: 'SOURCE_FILE_REQUIRED',
+            metadataRetrieved: true,
+            videoAcquired: false,
+          },
+          { status: 422 }
+        );
       }
     }
 
@@ -120,9 +128,9 @@ export async function POST(req: NextRequest) {
     if (!initialVideoPath || !fs.existsSync(initialVideoPath)) {
       return NextResponse.json(
         {
-          error: 'Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.',
-          errorState: 'VIDEO_ACQUISITION_FAILED',
-          metadataRetrieved: true,
+          error: 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.',
+          errorState: 'SOURCE_FILE_REQUIRED',
+          metadataRetrieved: Boolean(sourceUrl),
           videoAcquired: false,
         },
         { status: 422 }
@@ -141,21 +149,86 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Probe the input video file with ffprobe to verify duration and streams
+    let probeMeta: any;
+    try {
+      probeMeta = ffmpegCore.probe(initialVideoPath);
+    } catch (probeErr: any) {
+      return NextResponse.json(
+        {
+          error: `Failed to probe source video container: ${probeErr.message}`,
+          errorState: 'SOURCE_PROCESSING_FAILED',
+        },
+        { status: 422 }
+      );
+    }
+
+    if (!probeMeta || probeMeta.duration <= 0) {
+      return NextResponse.json(
+        {
+          error: 'Source video contains 0 seconds duration or corrupted stream.',
+          errorState: 'UNSUPPORTED_FORMAT',
+        },
+        { status: 422 }
+      );
+    }
+
     const projectId = `proj_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const sourceVideoId = `sv_${projectId}`;
     const projectTitle = title || (sourceUrl ? `GTA 6 Gameplay Shorts (${videoIngestionEngine.parseYouTubeUrl(sourceUrl).videoId || 'Stream'})` : 'GTA 6 Gameplay Shorts');
 
-    // 1. Create project in database
+    // Create strict project-isolated storage and copy source video into project workspace
+    const storagePaths = getProjectStoragePaths(projectId);
+    const ext = path.extname(initialVideoPath) || '.mp4';
+    const projectIsolatedSourcePath = path.join(storagePaths.sourceDir, `${projectId}_${sourceVideoId}_source${ext}`);
+
+    try {
+      fs.copyFileSync(initialVideoPath, projectIsolatedSourcePath);
+      console.log(`[ProjectsAPI] Copied source to isolated project storage: ${projectIsolatedSourcePath}`);
+    } catch (copyErr: any) {
+      console.error(`[ProjectsAPI] Failed to isolate source file:`, copyErr);
+      return NextResponse.json(
+        {
+          error: `Failed to copy source video to project storage: ${copyErr.message}`,
+          errorState: 'SOURCE_PROCESSING_FAILED',
+        },
+        { status: 500 }
+      );
+    }
+
+    // Compute cryptographic SHA-256 checksum on the isolated project source file
+    const sourceChecksum = computeFileChecksum(projectIsolatedSourcePath);
+    console.log(`[ProjectsAPI] Project ${projectId} source checksum: ${sourceChecksum}`);
+
+    // 1. Create project in database with isolated source video, checksum, and IDs
     dbRepo.createProject({
       id: projectId,
       userId: 'usr_creator_01',
       title: projectTitle,
       sourceUrl: sourceUrl || null,
-      sourceFile: initialVideoPath || null,
+      sourceFile: projectIsolatedSourcePath,
       sourceVideoId,
+      sourceChecksum,
     });
 
-    // 2. Initialize all 10 stages in database
+    // 2. Save source video record
+    dbRepo.saveSourceVideo({
+      id: sourceVideoId,
+      projectId,
+      fileName: path.basename(projectIsolatedSourcePath),
+      filePath: projectIsolatedSourcePath,
+      fileSize: fs.statSync(projectIsolatedSourcePath).size,
+      duration: probeMeta.duration,
+      width: probeMeta.width,
+      height: probeMeta.height,
+      fps: probeMeta.fps,
+      bitrate: probeMeta.bitrate,
+      audioChannels: probeMeta.audioChannels,
+      originSource: sourceUrl ? 'youtube_stream' : 'local_upload',
+      sha256Checksum: sourceChecksum,
+    });
+
+    // 3. Initialize all 10 stages in database
     const stages = [
       { num: 1, key: 'validating', name: 'Validating source link' },
       { num: 2, key: 'retrieving', name: 'Retrieving video information' },
@@ -181,28 +254,30 @@ export async function POST(req: NextRequest) {
       });
     });
 
-    // 3. Mark project in_progress at Stage 1
+    // 4. Mark project in_progress at Stage 1
     dbRepo.updateProjectStatus(projectId, 'in_progress', 2, 'Validating source link', {
       stageId: '1',
       stageStatus: 'ACTIVE',
     });
 
-    // 4. Asynchronously launch background orchestrator (never blocks the HTTP response)
+    // 5. Asynchronously launch background orchestrator (never blocks the HTTP response)
     const orchestrator = new MasterAgentOrchestrator();
+    const jobId = `job_${projectId}`;
+
     setTimeout(() => {
       orchestrator.processProject({
         projectId,
         sourceVideoId,
-        sourceFilePath: initialVideoPath,
+        sourceFilePath: projectIsolatedSourcePath,
+        sourceChecksum,
         sourceUrl,
-        pairAuthorizedStream: pairAuthorizedStream !== false,
-        jobId: `job_${projectId}`,
+        jobId,
       }).catch((err) => {
         console.error(`[ProjectsAPI] Background orchestrator execution failed for ${projectId}:`, err);
       });
     }, 20);
 
-    // 5. Immediate response to client (<100ms) with clean status and ID
+    // 6. Immediate response to client (<100ms) with clean status and ID
     return NextResponse.json({
       success: true,
       projectId,
@@ -210,6 +285,8 @@ export async function POST(req: NextRequest) {
       progress: 2,
       currentStage: 'Validating source link',
       sourceVideoId,
+      sourceChecksum,
+      jobId,
       message: 'Video source successfully queued. 10-stage multi-agent editing pipeline initiated.',
     });
   } catch (error: any) {

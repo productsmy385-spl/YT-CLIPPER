@@ -12,13 +12,14 @@ import type {
 
 export const dbRepo = {
   // --- PROJECTS ---
-  createProject(data: { id: string; userId: string; title: string; sourceUrl?: string; sourceFile?: string; sourceVideoId?: string }) {
+  createProject(data: { id: string; userId?: string; title: string; sourceUrl?: string; sourceFile?: string; sourceVideoId?: string; sourceChecksum?: string }) {
     const now = new Date().toISOString();
+    const userId = data.userId || 'usr_creator_01';
     const stmt = rawDb.prepare(`
-      INSERT INTO projects (id, user_id, title, status, progress, current_stage, source_url, source_file, source_video_id, created_at, updated_at)
-      VALUES (?, ?, ?, 'created', 0, 'init', ?, ?, ?, ?, ?)
+      INSERT INTO projects (id, user_id, title, status, progress, current_stage, source_url, source_file, source_video_id, source_checksum, created_at, updated_at)
+      VALUES (?, ?, ?, 'created', 0, 'init', ?, ?, ?, ?, ?, ?)
     `);
-    stmt.run(data.id, data.userId, data.title, data.sourceUrl || null, data.sourceFile || null, data.sourceVideoId || null, now, now);
+    stmt.run(data.id, userId, data.title, data.sourceUrl || null, data.sourceFile || null, data.sourceVideoId || null, data.sourceChecksum || null, now, now);
     return this.getProject(data.id);
   },
 
@@ -258,11 +259,12 @@ export const dbRepo = {
     bitrate?: number;
     audioChannels?: number;
     originSource?: string;
+    sha256Checksum?: string;
   }) {
     const now = new Date().toISOString();
     const stmt = rawDb.prepare(`
-      INSERT OR REPLACE INTO source_videos (id, project_id, file_name, file_path, file_size, duration, width, height, fps, bitrate, audio_channels, origin_source, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO source_videos (id, project_id, file_name, file_path, file_size, duration, width, height, fps, bitrate, audio_channels, origin_source, sha256_checksum, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       data.id,
@@ -277,12 +279,17 @@ export const dbRepo = {
       data.bitrate || 0,
       data.audioChannels || 2,
       data.originSource || 'authorized_stream',
+      data.sha256Checksum || null,
       now
     );
   },
 
-  getSourceVideoByProject(projectId: string) {
-    const stmt = rawDb.prepare(`SELECT * FROM source_videos WHERE project_id = ?`);
+  getSourceVideoByProject(projectId: string, sourceVideoId?: string) {
+    if (sourceVideoId) {
+      const stmt = rawDb.prepare(`SELECT * FROM source_videos WHERE project_id = ? AND id = ?`);
+      return stmt.get(projectId, sourceVideoId);
+    }
+    const stmt = rawDb.prepare(`SELECT * FROM source_videos WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`);
     return stmt.get(projectId);
   },
 
@@ -431,6 +438,8 @@ export const dbRepo = {
     qaScore?: number;
     copyrightPassed?: boolean;
     sourceVideoId?: string;
+    sourceChecksum?: string;
+    jobId?: string;
     rawClipPath?: string;
     editedClipPath?: string;
   }) {
@@ -445,8 +454,8 @@ export const dbRepo = {
         id, project_id, highlight_id, title, duration, start_time, end_time,
         extraction_version, editing_version, output_path, output_file_path, thumbnail_path,
         status, processing_status, resolution, fps, qa_score, copyright_passed,
-        source_video_id, raw_clip_path, edited_clip_path, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_video_id, source_checksum, job_id, raw_clip_path, edited_clip_path, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(project_id, highlight_id, extraction_version) DO UPDATE SET
         title = excluded.title,
         duration = excluded.duration,
@@ -463,6 +472,8 @@ export const dbRepo = {
         qa_score = COALESCE(excluded.qa_score, generated_clips.qa_score),
         copyright_passed = COALESCE(excluded.copyright_passed, generated_clips.copyright_passed),
         source_video_id = COALESCE(excluded.source_video_id, generated_clips.source_video_id),
+        source_checksum = COALESCE(excluded.source_checksum, generated_clips.source_checksum),
+        job_id = COALESCE(excluded.job_id, generated_clips.job_id),
         raw_clip_path = COALESCE(excluded.raw_clip_path, generated_clips.raw_clip_path),
         edited_clip_path = COALESCE(excluded.edited_clip_path, generated_clips.edited_clip_path),
         updated_at = excluded.updated_at
@@ -487,6 +498,8 @@ export const dbRepo = {
       data.qaScore || null,
       data.copyrightPassed === undefined ? null : data.copyrightPassed ? 1 : 0,
       data.sourceVideoId || null,
+      data.sourceChecksum || null,
+      data.jobId || null,
       data.rawClipPath || null,
       data.editedClipPath || null,
       now,
@@ -494,8 +507,20 @@ export const dbRepo = {
     );
   },
 
-  getClipsByProject(projectId: string) {
-    const stmt = rawDb.prepare(`SELECT * FROM generated_clips WHERE project_id = ? ORDER BY created_at DESC`);
+  getClipsByProject(projectId: string, sourceVideoId?: string) {
+    if (sourceVideoId) {
+      const stmt = rawDb.prepare(`
+        SELECT * FROM generated_clips 
+        WHERE project_id = ? AND (source_video_id = ? OR source_video_id IS NULL) AND (is_deleted = 0 OR is_deleted IS NULL)
+        ORDER BY created_at DESC
+      `);
+      return stmt.all(projectId, sourceVideoId);
+    }
+    const stmt = rawDb.prepare(`
+      SELECT * FROM generated_clips 
+      WHERE project_id = ? AND (is_deleted = 0 OR is_deleted IS NULL)
+      ORDER BY created_at DESC
+    `);
     return stmt.all(projectId);
   },
 
@@ -1053,8 +1078,14 @@ export const dbRepo = {
     const params: any[] = [];
 
     if (options.status && options.status !== 'all') {
-      whereClauses.push('status = ?');
-      params.push(options.status);
+      if (options.status === 'ready' || options.status === 'completed') {
+        whereClauses.push("(status = 'ready' OR status = 'completed')");
+      } else if (options.status === 'in_progress') {
+        whereClauses.push("(status = 'in_progress' OR status = 'analyzing' OR status = 'editing')");
+      } else {
+        whereClauses.push('status = ?');
+        params.push(options.status);
+      }
     }
 
     if (options.search && options.search.trim()) {

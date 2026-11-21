@@ -22,6 +22,8 @@ export interface VideoEditingInput {
   subtitleConfig?: SubtitleResult;
   editingVersion?: number;
   sourceVideoId?: string;
+  sourceChecksum?: string;
+  jobId?: string;
   highlightId?: string;
 }
 
@@ -54,7 +56,8 @@ export class VideoEditingAgent extends BaseAgent<VideoEditingInput, VideoEditing
     if (
       fs.existsSync(candidatePath) &&
       fs.statSync(candidatePath).size > 50000 &&
-      existingClip?.status === 'rendered'
+      existingClip?.status === 'rendered' &&
+      candidatePath.includes(projectId)
     ) {
       try {
         const val = ffmpegCore.validateRenderedVideo(candidatePath, input.duration);
@@ -128,6 +131,8 @@ export class VideoEditingAgent extends BaseAgent<VideoEditingInput, VideoEditing
       projectId,
       highlightId: input.highlightId || existingClip?.highlight_id || input.clipId,
       sourceVideoId: input.sourceVideoId || existingClip?.source_video_id,
+      sourceChecksum: input.sourceChecksum || existingClip?.source_checksum,
+      jobId: input.jobId || existingClip?.job_id,
       title: `GTA 6 Highlight (${input.duration.toFixed(1)}s Vertical Short)`,
       duration: validation.duration,
       outputPath: finalVideoPath,

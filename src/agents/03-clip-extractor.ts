@@ -17,14 +17,14 @@ export interface ExtractedClipResult {
   reused?: boolean;
 }
 
-export class ClipExtractionAgent extends BaseAgent<{ sourceVideoPath: string; highlights: DetectedHighlight[]; sourceVideoId?: string; extractionVersion?: number }, ExtractedClipResult[]> {
+export class ClipExtractionAgent extends BaseAgent<{ sourceVideoPath: string; highlights: DetectedHighlight[]; sourceVideoId?: string; sourceChecksum?: string; jobId?: string; extractionVersion?: number }, ExtractedClipResult[]> {
   readonly id = 'agent_03_extractor';
   readonly name = 'Clip Extraction Agent';
   readonly role = 'Idempotent Intelligent Boundary Trimming';
 
   protected async run(
     projectId: string,
-    input: { sourceVideoPath: string; highlights: DetectedHighlight[]; sourceVideoId?: string; extractionVersion?: number }
+    input: { sourceVideoPath: string; highlights: DetectedHighlight[]; sourceVideoId?: string; sourceChecksum?: string; jobId?: string; extractionVersion?: number }
   ): Promise<ExtractedClipResult[]> {
     const results: ExtractedClipResult[] = [];
     const storagePaths = getProjectStoragePaths(projectId);
@@ -57,14 +57,19 @@ export class ClipExtractionAgent extends BaseAgent<{ sourceVideoPath: string; hi
       const title = `GTA 6: ${h.categoryLabel} #${i + 1}`;
 
       // ================= IDEMPOTENT EXTRACTION CHECK =================
-      // Check whether an equivalent completed clip already exists
-      const existing = dbRepo.findEquivalentClip(projectId, h.id, extractionVersion) ||
-                       dbRepo.findClipByTimeRange(projectId, safeStart, safeEnd, 0.4);
+      // Check whether an equivalent completed clip already exists within THIS project
+      const existing = dbRepo.findEquivalentClip(projectId, h.id, extractionVersion);
 
       if (existing) {
         const existingPath = existing.raw_clip_path || existing.output_path || existing.output_file_path;
-        if (existingPath && fs.existsSync(existingPath) && fs.statSync(existingPath).size > 10000) {
-          console.log(`[ClipExtractionAgent] ✓ Reusing existing completed clip (${existing.id}) for highlight ${h.id} at [${safeStart}s–${safeEnd}s]. No re-extraction needed.`);
+        if (
+          existingPath &&
+          fs.existsSync(existingPath) &&
+          fs.statSync(existingPath).size > 10000 &&
+          existing.project_id === projectId &&
+          existingPath.includes(projectId)
+        ) {
+          console.log(`[ClipExtractionAgent] ✓ Reusing existing completed clip (${existing.id}) for highlight ${h.id} at [${safeStart}s–${safeEnd}s].`);
           results.push({
             clipId: existing.id,
             highlightId: h.id,
@@ -87,6 +92,8 @@ export class ClipExtractionAgent extends BaseAgent<{ sourceVideoPath: string; hi
         projectId,
         highlightId: h.id,
         sourceVideoId,
+        sourceChecksum: input.sourceChecksum,
+        jobId: input.jobId,
         title,
         duration: safeDuration,
         startTime: safeStart,

@@ -20,7 +20,11 @@ import {
   Trash2,
   AlertTriangle,
   RotateCw,
+  Youtube,
+  Calendar,
 } from 'lucide-react';
+import { PublishModal } from '@/components/publishing/publish-modal';
+import { ScheduleModal } from '@/components/publishing/schedule-modal';
 
 function EditorContent() {
   const searchParams = useSearchParams();
@@ -42,6 +46,10 @@ function EditorContent() {
   const [renderSuccess, setRenderSuccess] = useState(false);
   const [deleteConfirmClip, setDeleteConfirmClip] = useState<any | null>(null);
   const [deletingClip, setDeletingClip] = useState(false);
+
+  // Publishing & Scheduling modals
+  const [showPublishModal, setShowPublishModal] = useState(false);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
 
   // Load project list
   useEffect(() => {
@@ -162,12 +170,30 @@ function EditorContent() {
           </div>
 
           {selectedClip && (
-            <Link
-              href={`/export?clip=${selectedClip.id}`}
-              className="px-4 py-2 rounded-lg bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-bold text-xs flex items-center gap-1.5 shadow-sm hover:opacity-95 transition-opacity"
-            >
-              <Share2 className="w-3.5 h-3.5" /> Export All Platforms
-            </Link>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPublishModal(true)}
+                className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-extrabold text-xs flex items-center gap-1.5 shadow-sm hover:opacity-95 transition-all"
+              >
+                <Youtube className="w-3.5 h-3.5" /> Publish Now
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowScheduleModal(true)}
+                className="px-3 py-2 rounded-xl border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary font-bold text-xs flex items-center gap-1.5 transition-colors"
+              >
+                <Calendar className="w-3.5 h-3.5" /> Schedule
+              </button>
+
+              <Link
+                href={`/export?clip=${selectedClip.id}`}
+                className="px-3 py-2 rounded-xl border border-border bg-card hover:bg-muted text-foreground font-semibold text-xs flex items-center gap-1.5 transition-colors"
+              >
+                <Share2 className="w-3.5 h-3.5" /> Export Hub
+              </Link>
+            </div>
           )}
         </div>
       </div>
@@ -530,6 +556,44 @@ function EditorContent() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Publish Now Modal */}
+      {showPublishModal && selectedClip && (
+        <PublishModal
+          isOpen={showPublishModal}
+          onClose={() => setShowPublishModal(false)}
+          clip={{
+            id: selectedClip.id,
+            title: selectedClip.title,
+            duration: selectedClip.duration,
+            resolution: '1080x1920',
+            previewUrl: selectedClip.finalPreviewUrl || selectedClip.rawPreviewUrl,
+            filePath: selectedClip.output_path || selectedClip.raw_clip_path,
+          }}
+          onSuccess={() => {
+            setShowPublishModal(false);
+          }}
+        />
+      )}
+
+      {/* Schedule Modal */}
+      {showScheduleModal && selectedClip && (
+        <ScheduleModal
+          isOpen={showScheduleModal}
+          onClose={() => setShowScheduleModal(false)}
+          clip={{
+            id: selectedClip.id,
+            title: selectedClip.title,
+            duration: selectedClip.duration,
+            resolution: '1080x1920',
+            previewUrl: selectedClip.finalPreviewUrl || selectedClip.rawPreviewUrl,
+            filePath: selectedClip.output_path || selectedClip.raw_clip_path,
+          }}
+          onSuccess={() => {
+            setShowScheduleModal(false);
+          }}
+        />
       )}
     </div>
   );

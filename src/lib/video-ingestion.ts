@@ -1,18 +1,19 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { ffmpegCore } from './ffmpeg-core';
+import crypto from 'node:crypto';
+import { ffmpegCore } from './ffmpeg-core.ts';
 import {
   APP_ROOT,
   STORAGE_UPLOADS_DIR,
   AUTHORIZED_SOURCES_DIR,
-  SAMPLES_DIR,
-} from './app-paths';
+} from './app-paths.ts';
 
 export type IngestionErrorState =
   | 'INVALID_YOUTUBE_URL'
   | 'VIDEO_UNAVAILABLE'
   | 'PRIVATE_VIDEO'
   | 'SOURCE_PERMISSION_MISSING'
+  | 'SOURCE_FILE_REQUIRED'
   | 'VIDEO_ACQUISITION_FAILED'
   | 'UNSUPPORTED_FORMAT'
   | 'SOURCE_PROCESSING_FAILED';
@@ -22,6 +23,7 @@ export interface VideoSourceInfo {
   url?: string;
   videoId?: string;
   filePath?: string;
+  checksum?: string;
   title: string;
   authorName?: string;
   thumbnailUrl?: string;
@@ -36,6 +38,21 @@ export interface VideoSourceInfo {
   metadataRetrieved?: boolean;
   videoAcquired?: boolean;
   availableActions?: Array<'ATTACH_CREATOR_FILE' | 'USE_AUTHORIZED_GAMEPLAY_STREAM' | 'UPLOAD_FILE'>;
+}
+
+/**
+ * Computes SHA-256 checksum in 64KB chunks to guarantee zero buffer overflow
+ */
+export function computeFileChecksum(filePath: string): string {
+  const hash = crypto.createHash('sha256');
+  const fd = fs.openSync(filePath, 'r');
+  const buffer = Buffer.alloc(64 * 1024);
+  let bytesRead = 0;
+  while ((bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+    hash.update(buffer.subarray(0, bytesRead));
+  }
+  fs.closeSync(fd);
+  return hash.digest('hex');
 }
 
 export const videoIngestionEngine = {
@@ -166,17 +183,25 @@ export const videoIngestionEngine = {
   },
 
   /**
-   * Acquire YouTube video via yt-dlp if available (with strict timeout and non-blocking spawn)
+   * Acquire YouTube video via yt-dlp with Node.js EJS challenge solver,
+   * fast h264/m4a stream remuxing, livestream support, and robust timeout.
    */
-  async acquireYouTubeStream(videoId: string, cleanUrl: string): Promise<string | null> {
+  async acquireYouTubeStream(
+    videoId: string,
+    cleanUrl: string,
+    isLive: boolean = false,
+    options?: { maxDurationSeconds?: number }
+  ): Promise<string | null> {
     const targetFile = path.resolve(AUTHORIZED_SOURCES_DIR, `${videoId}.mp4`);
     if (fs.existsSync(targetFile) && fs.statSync(targetFile).size > 100000) {
+      console.log(`[VideoIngestion] Using existing acquired video on disk: ${targetFile} (${fs.statSync(targetFile).size} bytes)`);
       return targetFile;
     }
 
     // Check if an existing authorized stream or recording is already present
     const existingAuthorized = this.findAuthorizedSourceFile(videoId);
     if (existingAuthorized) {
+      console.log(`[VideoIngestion] Found existing authorized source file: ${existingAuthorized}`);
       return existingAuthorized;
     }
 
@@ -185,31 +210,63 @@ export const videoIngestionEngine = {
         fs.mkdirSync(AUTHORIZED_SOURCES_DIR, { recursive: true });
       }
 
-      console.log(`[VideoIngestion] Initiating yt-dlp acquisition for ${videoId}...`);
+      console.log(`[VideoIngestion] Initiating yt-dlp stream acquisition for ${videoId} (${isLive ? 'Live Stream' : 'Video'})...`);
       const { spawn } = await import('node:child_process');
 
       return await new Promise<string | null>((resolve) => {
         let timedOut = false;
-        // 8s timeout prevents pipeline freezing when python/yt-dlp is unresponsive or missing
+        // 180s (3 minute) timeout gives ample time to download and remux 1080p stream
         const timer = setTimeout(() => {
           timedOut = true;
-          try { child.kill('SIGTERM'); } catch {}
-          console.warn(`[VideoIngestion] Stream acquisition probe timed out after 8s for ${videoId}.`);
+          try { child.kill('SIGKILL'); } catch {}
+          console.warn(`[VideoIngestion] Stream acquisition probe timed out after 180s for ${videoId}.`);
           resolve(null);
-        }, 8000);
+        }, 180000);
 
-        const child = spawn(
-          'python',
-          [
-            '-m', 'yt_dlp',
-            '-f', 'bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b',
-            '--merge-output-format', 'mp4',
-            '--no-playlist',
-            '-o', targetFile,
-            cleanUrl
-          ],
-          { stdio: ['ignore', 'pipe', 'pipe'] }
-        );
+        const args = [
+          '-m', 'yt_dlp',
+          '--remote-components', 'ejs:github',
+          '--js-runtimes', 'node',
+          // Prefer high-speed remuxing: AVC/H.264 video up to 1080p + AAC/M4A audio (avoids slow software re-encoding)
+          '-f', 'bv*[height<=1080][vcodec^=avc]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/best',
+          '--merge-output-format', 'mp4',
+          '--no-playlist',
+        ];
+
+        if (isLive) {
+          // If active live stream, capture from start or recent 5 minutes
+          args.push('--live-from-start', '--download-sections', '*00:00:00-00:05:00');
+        } else if (options?.maxDurationSeconds && options.maxDurationSeconds > 0) {
+          const maxMin = Math.floor(options.maxDurationSeconds / 60);
+          const maxSec = options.maxDurationSeconds % 60;
+          args.push('--download-sections', `*00:00:00-${String(maxMin).padStart(2, '0')}:${String(maxSec).padStart(2, '0')}`);
+        }
+
+        args.push('-o', targetFile, cleanUrl);
+
+        console.log(`[VideoIngestion] Executing: python ${args.join(' ')}`);
+
+        const child = spawn('python', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+        let stdoutBuf = '';
+        let stderrBuf = '';
+
+        child.stdout?.on('data', (d) => {
+          const text = d.toString();
+          stdoutBuf += text;
+          if (text.includes('%') || text.includes('Destination:') || text.includes('Merging')) {
+            const lastLine = text.trim().split('\n').pop();
+            console.log(`[VideoIngestion yt-dlp] ${lastLine}`);
+          }
+        });
+
+        child.stderr?.on('data', (d) => {
+          const text = d.toString();
+          stderrBuf += text;
+          if (text.includes('ERROR:')) {
+            console.error(`[VideoIngestion yt-dlp ERROR] ${text.trim()}`);
+          }
+        });
 
         child.on('error', (err) => {
           clearTimeout(timer);
@@ -222,11 +279,14 @@ export const videoIngestionEngine = {
         child.on('close', (code) => {
           clearTimeout(timer);
           if (timedOut) return;
-          if (code === 0 && fs.existsSync(targetFile) && fs.statSync(targetFile).size > 100000) {
+          if (code === 0 && fs.existsSync(targetFile) && fs.statSync(targetFile).size > 50000) {
             console.log(`[VideoIngestion] ✓ Acquired stream successfully: ${targetFile} (${fs.statSync(targetFile).size} bytes)`);
             resolve(targetFile);
           } else {
             console.warn(`[VideoIngestion] yt-dlp exited with code ${code} for ${videoId}. Target valid: ${fs.existsSync(targetFile)}`);
+            if (stderrBuf) {
+              console.warn(`[VideoIngestion yt-dlp stderr]:\n${stderrBuf.slice(-400)}`);
+            }
             resolve(null);
           }
         });
@@ -246,7 +306,6 @@ export const videoIngestionEngine = {
     const searchDirs = [
       AUTHORIZED_SOURCES_DIR,
       STORAGE_UPLOADS_DIR,
-      SAMPLES_DIR,
     ];
 
     for (const dir of searchDirs) {
@@ -307,10 +366,12 @@ export const videoIngestionEngine = {
         }
 
         console.log(`[VideoIngestion] ✓ Authorized local source accepted: ${path.basename(resolved)} (${meta.duration.toFixed(1)}s, ${meta.width}x${meta.height})`);
+        const checksum = computeFileChecksum(resolved);
 
         return {
           type: 'local_upload',
           filePath: resolved,
+          checksum,
           title: input.title || path.basename(resolved),
           duration: meta.duration,
           width: meta.width,
@@ -377,25 +438,13 @@ export const videoIngestionEngine = {
       // Check if this YouTube stream has an authorized local recording on disk matching videoId
       let authorizedFile = this.findAuthorizedSourceFile(yt.videoId);
 
-      // If requested via useAuthorizedFallback, check for authorized stream sample
-      if (!authorizedFile && input.useAuthorizedFallback) {
-        const sampleStream = path.resolve(SAMPLES_DIR, 'gta6_authorized_gameplay_sample.mp4');
-        if (fs.existsSync(sampleStream)) {
-          authorizedFile = sampleStream;
-        }
-      }
-
-      // If not yet on disk, attempt direct acquisition via yt-dlp
-      if (!authorizedFile && yt.videoId && yt.cleanUrl) {
-        authorizedFile = await this.acquireYouTubeStream(yt.videoId, yt.cleanUrl);
-      }
-
       if (authorizedFile && fs.existsSync(authorizedFile)) {
         try {
           fs.accessSync(authorizedFile, fs.constants.R_OK);
           const probeMeta = ffmpegCore.probe(authorizedFile);
           if (probeMeta && probeMeta.duration > 0) {
             console.log(`[VideoIngestion] ✓ Authorized gameplay recording acquired: ${path.basename(authorizedFile)} (${probeMeta.duration.toFixed(1)}s, ${probeMeta.width}x${probeMeta.height})`);
+            const checksum = computeFileChecksum(authorizedFile);
 
             return {
               type: yt.isLive ? 'youtube_live' : 'youtube',
@@ -405,6 +454,7 @@ export const videoIngestionEngine = {
               authorName: author,
               thumbnailUrl: thumbnail,
               filePath: authorizedFile,
+              checksum,
               duration: probeMeta.duration,
               width: probeMeta.width,
               height: probeMeta.height,
@@ -420,7 +470,7 @@ export const videoIngestionEngine = {
         }
       }
 
-      // If video file cannot be acquired, halt with clear explicit error. Never silently substitute an unverified video.
+      // YouTube metadata verified; acquisition worker will acquire stream during processing
       return {
         type: yt.isLive ? 'youtube_live' : 'youtube',
         url: yt.cleanUrl || input.url,
@@ -428,12 +478,10 @@ export const videoIngestionEngine = {
         title: videoTitle,
         authorName: author,
         thumbnailUrl: thumbnail,
-        canProcess: false,
-        errorState: 'VIDEO_ACQUISITION_FAILED',
-        errorMessage: 'Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.',
+        canProcess: true,
         metadataRetrieved: true,
         videoAcquired: false,
-        availableActions: ['UPLOAD_FILE', 'ATTACH_CREATOR_FILE'],
+        availableActions: ['ACQUIRE_STREAM', 'UPLOAD_FILE'],
       };
     }
 

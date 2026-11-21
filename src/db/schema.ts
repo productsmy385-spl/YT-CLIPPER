@@ -27,6 +27,8 @@ export const projects = sqliteTable('projects', {
   lockAcquiredAt: text('lock_acquired_at'),
   sourceUrl: text('source_url'),
   sourceFile: text('source_file'),
+  sourceVideoId: text('source_video_id'),
+  sourceChecksum: text('source_checksum'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -43,6 +45,7 @@ export const sourceVideos = sqliteTable('source_videos', {
   fps: real('fps').notNull(),
   bitrate: integer('bitrate'),
   audioChannels: integer('audio_channels'),
+  sha256Checksum: text('sha256_checksum'),
   copyrightDeclared: integer('copyright_declared', { mode: 'boolean' }).default(true),
   originSource: text('origin_source').default('authorized_stream'),
   createdAt: text('created_at').notNull(),
@@ -112,6 +115,8 @@ export const generatedClips = sqliteTable('generated_clips', {
   fps: integer('fps').default(30),
   qaScore: integer('qa_score'),
   copyrightPassed: integer('copyright_passed', { mode: 'boolean' }),
+  sourceChecksum: text('source_checksum'),
+  jobId: text('job_id'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at'),
 });

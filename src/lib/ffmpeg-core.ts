@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -179,8 +179,6 @@ export const ffmpegCore = {
     const meta = this.probe(inputVideo);
 
     const args = [
-      '-nostats',
-      '-loglevel', 'error',
       '-y',
       '-ss', String(start),
       '-i', inputVideo,
@@ -206,15 +204,21 @@ export const ffmpegCore = {
       outputClip
     );
 
-    const res = spawnSync(FFMPEG, args, { encoding: 'utf8', maxBuffer: 100 * 1024 * 1024 });
-    if (res.status !== 0) {
-      throw new Error(`Cut segment failed for ${inputVideo}: ${res.stderr}`);
-    }
+    return new Promise<void>((resolve, reject) => {
+      const child = spawn(FFMPEG, args);
+      let stderr = '';
+      child.stderr?.on('data', (d) => { stderr += d.toString(); });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`Cut segment failed for ${inputVideo} (code ${code}): ${stderr.slice(-400)}`));
+      });
+    });
   },
 
   // 5. Programmatic 9:16 Vertical Composition with Original Gameplay Preservation,
   // Smart Dual-Mode Cropping (Blurred Background vs Action Crop), Audio Ducking, and Memes
-  renderVerticalShort(params: {
+  async renderVerticalShort(params: {
     sourceClip: string;
     outputPath: string;
     duration: number;
@@ -249,7 +253,6 @@ export const ffmpegCore = {
     const sourceMeta = this.probe(sourceClip);
 
     const inputs: string[] = ['-y', '-i', sourceClip];
-    let nextInputIdx = 1;
     const filterParts: string[] = [];
 
     // --- VIDEO PIPELINE ---
@@ -259,7 +262,7 @@ export const ffmpegCore = {
       // Foreground: 100% full original gameplay scaled to 1080 width, centered vertically at (H-h)/2
       // This guarantees 100% of game HUD, weapons, radar, streamer cam, and stunt action remain completely visible!
       filterParts.push(
-        `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:2[bg]`,
+        `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg]`,
         `[0:v]scale=1080:-1[fg]`,
         `[bg][fg]overlay=(W-w)/2:(H-h)/2[v_base]`
       );
@@ -274,7 +277,7 @@ export const ffmpegCore = {
     let currentV = '[v_base]';
     if (memeOverlayPath && fs.existsSync(memeOverlayPath)) {
       inputs.push('-i', memeOverlayPath);
-      const memeIdx = nextInputIdx++;
+      const memeIdx = inputs.length / 2 - 1;
       filterParts.push(
         `[${memeIdx}:v]scale=320:320[meme_scaled]`,
         `${currentV}[meme_scaled]overlay=W-w-30:90:enable='between(t,${memeStart},${memeStart + memeDuration})'[v_meme]`
@@ -302,7 +305,7 @@ export const ffmpegCore = {
       // BGM with auto-ducking (low volume, smooth in/out)
       if (bgmPath && fs.existsSync(bgmPath)) {
         inputs.push('-i', bgmPath);
-        const bgmIdx = nextInputIdx++;
+        const bgmIdx = inputs.length / 2 - 1;
         filterParts.push(
           `[${bgmIdx}:a]aformat=channel_layouts=stereo:sample_rates=48000,aloop=loop=-1:size=2880000,atrim=0:${duration},volume=${bgmVolume},afade=t=in:ss=0:d=1,afade=t=out:st=${duration - 1.5}:d=1.5[bgm_ducked]`
         );
@@ -313,7 +316,7 @@ export const ffmpegCore = {
       sfxEvents.forEach((sfx, idx) => {
         if (fs.existsSync(sfx.sfxPath)) {
           inputs.push('-i', sfx.sfxPath);
-          const sfxIdx = nextInputIdx++;
+          const sfxIdx = inputs.length / 2 - 1;
           const delayMs = Math.round(sfx.timestamp * 1000);
           filterParts.push(
             `[${sfxIdx}:a]aformat=channel_layouts=stereo:sample_rates=48000,adelay=${delayMs}|${delayMs},volume=${sfx.volume}[sfx_${idx}]`
@@ -338,15 +341,13 @@ export const ffmpegCore = {
     }
 
     const args = [
-      '-nostats',
-      '-loglevel', 'error',
       ...inputs,
       '-filter_complex', filterParts.join(';'),
       '-map', '[v_out]',
       '-map', '[a_out]',
       '-t', String(duration),
       '-c:v', 'libx264',
-      '-preset', 'ultrafast',
+      '-preset', 'veryfast',
       '-crf', '19',
       '-pix_fmt', 'yuv420p',
       '-c:a', 'aac',
@@ -355,7 +356,7 @@ export const ffmpegCore = {
       outputPath,
     ];
 
-    const res = spawnSync(FFMPEG, args, { encoding: 'utf8', maxBuffer: 100 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    const res = spawnSync(FFMPEG, args, { encoding: 'utf8' });
     if (res.status !== 0) {
       throw new Error(`Vertical render failed: ${res.stderr}`);
     }
@@ -435,7 +436,7 @@ export const ffmpegCore = {
     }
 
     // 3. Black Screen Detection (verify video contains actual gameplay frames)
-    const isBlackScreen = this.checkBlackFrames(filePath);
+    const isBlackScreen = this.checkBlackFrames(filePath, meta.duration);
     if (isBlackScreen) {
       errors.push(`Black screen detected: video contains empty or unrendered frames.`);
     }
@@ -482,14 +483,33 @@ export const ffmpegCore = {
     };
   },
 
-  // 7. Black frame detector
-  checkBlackFrames(videoPath: string): boolean {
+  // 7. Black frame detector: detects unrendered, empty black screens while allowing standard cinematic cuts
+  checkBlackFrames(videoPath: string, totalDuration?: number): boolean {
     const res = spawnSync(
       FFMPEG,
-      ['-i', videoPath, '-vf', 'blackdetect=d=0.5:pix_th=0.10', '-f', 'null', '-'],
+      ['-i', videoPath, '-vf', 'blackdetect=d=1.0:pix_th=0.10', '-f', 'null', '-'],
       { encoding: 'utf8' }
     );
-    return (res.stderr || '').includes('black_start');
+    const stderr = res.stderr || '';
+    const matches = [...stderr.matchAll(/black_duration:([0-9.]+)/g)];
+    if (matches.length === 0) return false;
+
+    const durations = matches.map((m) => parseFloat(m[1]));
+    const totalBlack = durations.reduce((sum, d) => sum + d, 0);
+    const longestBlack = Math.max(...durations);
+
+    // If total video duration is provided:
+    // Video is only considered black if uninterrupted black duration is >= 50% of the video
+    // or total black spans >= 70% of the video duration.
+    if (totalDuration && totalDuration > 0) {
+      if (totalBlack >= totalDuration * 0.70) return true;
+      if (longestBlack >= Math.min(10.0, totalDuration * 0.50)) return true;
+      return false;
+    }
+
+    // Default: only considered black screen if an uninterrupted black segment is >= 10 seconds,
+    // or total black exceeds 15 seconds
+    return longestBlack >= 10.0 || totalBlack >= 15.0;
   },
 
   // 8. Audio clipping check

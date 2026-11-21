@@ -14,8 +14,11 @@ import {
   Search,
   X,
   Filter,
+  Calendar,
 } from 'lucide-react';
 import { Pagination } from '@/components/ui/pagination';
+import { PublishModal } from '@/components/publishing/publish-modal';
+import { ScheduleModal } from '@/components/publishing/schedule-modal';
 import { cn } from '@/lib/utils';
 
 function ExportHubContent() {
@@ -28,6 +31,10 @@ function ExportHubContent() {
   const [search, setSearch] = useState(() => searchParams.get('search') || '');
   const [platform, setPlatform] = useState(() => searchParams.get('platform') || 'all');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Publishing & Scheduling modals
+  const [exportPublishClip, setExportPublishClip] = useState<any | null>(null);
+  const [exportScheduleClip, setExportScheduleClip] = useState<any | null>(null);
 
   useEffect(() => {
     fetch('/api/clips')
@@ -182,13 +189,47 @@ function ExportHubContent() {
                     </span>
                   </div>
 
-                  <a
-                    href={`/api/media/exports/${fileName}`}
-                    download={fileName}
-                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-bold text-xs flex items-center gap-2 self-start shadow-sm hover:opacity-95 transition-all"
-                  >
-                    <Download className="w-3.5 h-3.5" /> Download MP4
-                  </a>
+                  <div className="flex items-center gap-2 flex-wrap self-start">
+                    <button
+                      type="button"
+                      onClick={() => setExportPublishClip({
+                        id: exp.clip_id || exp.id,
+                        exportFileId: exp.id,
+                        title: exp.title,
+                        description: exp.description,
+                        tags: exp.tags,
+                        videoPath: exp.file_path,
+                        finalPreviewUrl: `/api/media/exports/${fileName}`,
+                      })}
+                      className="px-3 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all"
+                    >
+                      <Share2 className="w-3.5 h-3.5" /> Publish Now
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setExportScheduleClip({
+                        id: exp.clip_id || exp.id,
+                        exportFileId: exp.id,
+                        title: exp.title,
+                        description: exp.description,
+                        tags: exp.tags,
+                        videoPath: exp.file_path,
+                        finalPreviewUrl: `/api/media/exports/${fileName}`,
+                      })}
+                      className="px-3 py-2 rounded-xl bg-card border border-border hover:bg-muted text-foreground font-semibold text-xs flex items-center gap-1.5 shadow-xs transition-all"
+                    >
+                      <Calendar className="w-3.5 h-3.5 text-primary" /> Schedule
+                    </button>
+
+                    <a
+                      href={`/api/media/exports/${fileName}`}
+                      download={fileName}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-bold text-xs flex items-center gap-2 shadow-sm hover:opacity-95 transition-all"
+                    >
+                      <Download className="w-3.5 h-3.5" /> Download MP4
+                    </a>
+                  </div>
                 </div>
 
                 {/* Metadata Blocks */}
@@ -266,6 +307,26 @@ function ExportHubContent() {
         isLoading={loading}
         itemLabel="packages"
       />
+
+      {/* Publish Now Modal */}
+      {exportPublishClip && (
+        <PublishModal
+          clip={exportPublishClip}
+          isOpen={!!exportPublishClip}
+          onClose={() => setExportPublishClip(null)}
+          onSuccess={() => {}}
+        />
+      )}
+
+      {/* Schedule Modal */}
+      {exportScheduleClip && (
+        <ScheduleModal
+          clip={exportScheduleClip}
+          isOpen={!!exportScheduleClip}
+          onClose={() => setExportScheduleClip(null)}
+          onSuccess={() => {}}
+        />
+      )}
     </div>
   );
 }

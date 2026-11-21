@@ -2,18 +2,48 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { DB_PATH } from '../lib/app-paths.ts';
+import { replicateToPostgres, syncSQLiteFromPostgres, getPostgresPool } from './postgres.ts';
 
-export const rawDb = new DatabaseSync(DB_PATH);
+const internalDb = new DatabaseSync(DB_PATH);
 
 // Enable busy timeout FIRST so any concurrent worker waits up to 30s instead of throwing 'database is locked'
 try {
-  rawDb.exec('PRAGMA busy_timeout = 30000;');
-  rawDb.exec('PRAGMA journal_mode = WAL;');
-  rawDb.exec('PRAGMA synchronous = NORMAL;');
-  rawDb.exec('PRAGMA foreign_keys = ON;');
+  internalDb.exec('PRAGMA busy_timeout = 30000;');
+  internalDb.exec('PRAGMA journal_mode = WAL;');
+  internalDb.exec('PRAGMA synchronous = NORMAL;');
+  internalDb.exec('PRAGMA foreign_keys = ON;');
 } catch (e: any) {
   console.warn('[DatabaseSync] Pragma init note:', e?.message);
 }
+
+// Transparent Proxy on rawDb that executes locally and replicates writes to PostgreSQL
+export const rawDb = {
+  prepare(sql: string) {
+    const stmt = internalDb.prepare(sql);
+    const isMutation = /^\s*(INSERT|UPDATE|DELETE)\s+/i.test(sql);
+
+    return {
+      run(...params: any[]) {
+        const result = stmt.run(...params);
+        if (isMutation) {
+          try {
+            replicateToPostgres(sql, params);
+          } catch {}
+        }
+        return result;
+      },
+      get(...params: any[]) {
+        return stmt.get(...params);
+      },
+      all(...params: any[]) {
+        return stmt.all(...params);
+      },
+    };
+  },
+  exec(sql: string) {
+    return internalDb.exec(sql);
+  },
+};
 
 // Initialize Normalized Schema (21 tables matching architecture)
 export function initDatabase() {
@@ -431,21 +461,26 @@ export function initDatabase() {
 
   // Relational isolation columns for independent projects
   try { rawDb.exec(`ALTER TABLE projects ADD COLUMN source_video_id TEXT;`); } catch {}
+  try { rawDb.exec(`ALTER TABLE projects ADD COLUMN source_checksum TEXT;`); } catch {}
   try { rawDb.exec(`ALTER TABLE source_videos ADD COLUMN source_url TEXT;`); } catch {}
   try { rawDb.exec(`ALTER TABLE source_videos ADD COLUMN platform_video_id TEXT;`); } catch {}
   try { rawDb.exec(`ALTER TABLE source_videos ADD COLUMN title TEXT;`); } catch {}
   try { rawDb.exec(`ALTER TABLE source_videos ADD COLUMN channel_name TEXT;`); } catch {}
+  try { rawDb.exec(`ALTER TABLE source_videos ADD COLUMN sha256_checksum TEXT;`); } catch {}
   try { rawDb.exec(`ALTER TABLE source_videos ADD COLUMN authorization_status TEXT DEFAULT 'authorized';`); } catch {}
   try { rawDb.exec(`ALTER TABLE source_videos ADD COLUMN ingestion_status TEXT DEFAULT 'completed';`); } catch {}
   try { rawDb.exec(`ALTER TABLE video_analysis ADD COLUMN source_video_id TEXT;`); } catch {}
   try { rawDb.exec(`ALTER TABLE detected_highlights ADD COLUMN source_video_id TEXT;`); } catch {}
   try { rawDb.exec(`ALTER TABLE generated_clips ADD COLUMN source_video_id TEXT;`); } catch {}
+  try { rawDb.exec(`ALTER TABLE generated_clips ADD COLUMN source_checksum TEXT;`); } catch {}
+  try { rawDb.exec(`ALTER TABLE generated_clips ADD COLUMN job_id TEXT;`); } catch {}
   try { rawDb.exec(`ALTER TABLE generated_clips ADD COLUMN raw_clip_path TEXT;`); } catch {}
   try { rawDb.exec(`ALTER TABLE generated_clips ADD COLUMN edited_clip_path TEXT;`); } catch {}
   try { rawDb.exec(`ALTER TABLE editing_jobs ADD COLUMN source_video_id TEXT;`); } catch {}
 
-  // Reconcile existing duplicate records before applying unique constraint
+  // Reconcile existing duplicate records and audit unverified clips
   reconcileDuplicateClips();
+  reconcileUnverifiedClips();
 
   // High-performance indexes for server-side pagination, searching, and calendar queries
   try { rawDb.exec(`CREATE INDEX IF NOT EXISTS idx_projects_created ON projects(created_at DESC);`); } catch {}
@@ -561,5 +596,70 @@ export function reconcileDuplicateClips(): { reconciledGroups: number; removedDu
   return { reconciledGroups, removedDuplicates };
 }
 
+/**
+ * Phase 12: Audit & Reconcile Existing Unverified Clips
+ * Identifies clips that were generated using global fallback paths or lack verified source video relationships.
+ * Marks them as 'needs_review' rather than treating them as valid generated clips.
+ */
+export function reconcileUnverifiedClips(): { auditedCount: number; flaggedNeedsReview: number } {
+  let flaggedNeedsReview = 0;
+  let auditedCount = 0;
+
+  try {
+    // 1. Flag clips linked to projects that used the global fallback sample instead of an authentic source
+    const fallbackProjects = rawDb.prepare(`
+      SELECT id FROM projects 
+      WHERE source_file LIKE '%gta6_authorized_gameplay_sample.mp4%' 
+        AND source_url IS NOT NULL 
+        AND source_url != ''
+    `).all() as Array<{ id: string }>;
+
+    for (const p of fallbackProjects) {
+      const res = rawDb.prepare(`
+        UPDATE generated_clips 
+        SET processing_status = 'needs_review', status = 'needs_review', updated_at = datetime('now')
+        WHERE project_id = ? AND processing_status != 'needs_review'
+      `).run(p.id);
+      flaggedNeedsReview += Number(res.changes || 0);
+    }
+
+    // 2. Flag clips that lack output files on disk
+    const allClips = rawDb.prepare(`
+      SELECT id, output_path, output_file_path, raw_clip_path, processing_status 
+      FROM generated_clips
+      WHERE processing_status != 'needs_review'
+    `).all() as any[];
+
+    auditedCount = allClips.length;
+
+    for (const clip of allClips) {
+      const outPath = clip.output_file_path || clip.output_path;
+      if (!outPath || !fs.existsSync(outPath)) {
+        rawDb.prepare(`
+          UPDATE generated_clips 
+          SET processing_status = 'needs_review', status = 'needs_review', updated_at = datetime('now')
+          WHERE id = ?
+        `).run(clip.id);
+        flaggedNeedsReview++;
+      }
+    }
+
+    if (flaggedNeedsReview > 0) {
+      console.log(`[Database] ✓ Audit reconciled: flagged ${flaggedNeedsReview} unverified/fallback clips as 'needs_review'.`);
+    }
+  } catch (err: any) {
+    console.warn(`[Database] Unverified clips audit note:`, err.message);
+  }
+
+  return { auditedCount, flaggedNeedsReview };
+}
+
 // Auto-run schema initialization on import
 initDatabase();
+
+// Asynchronously hydrate from cloud PostgreSQL if DATABASE_URL is configured
+try {
+  syncSQLiteFromPostgres(internalDb).catch((err: any) => {
+    console.warn('[PostgreSQL] Async hydration notice:', err?.message);
+  });
+} catch {}

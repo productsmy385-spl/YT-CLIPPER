@@ -169,9 +169,9 @@ function ProjectsContent() {
           >
             <option value="all">All Statuses</option>
             <option value="ready">Ready / Completed</option>
+            <option value="in_progress">In Progress</option>
             <option value="created">Created / Pending</option>
-            <option value="analyzing">Analyzing</option>
-            <option value="editing">Editing</option>
+            <option value="error">Failed / Error</option>
             <option value="cancelled">Cancelled</option>
           </select>
 
@@ -222,6 +222,7 @@ function ProjectsContent() {
           {projects.map((p: any) => {
             const isCompleted = p.status === 'completed' || p.status === 'ready';
             const isCancelled = p.status === 'cancelled';
+            const isError = p.status === 'error';
 
             return (
               <div
@@ -239,6 +240,8 @@ function ProjectsContent() {
                           'text-[10px] font-bold px-2 py-0.5 rounded uppercase',
                           isCancelled
                             ? 'bg-red-500/15 text-red-700 dark:text-red-400 border border-red-500/30'
+                            : isError
+                            ? 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/30'
                             : isCompleted
                             ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30'
                             : 'bg-primary/15 text-primary border border-primary/30 animate-pulse'

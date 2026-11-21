@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getProjectStoragePaths, SAMPLES_DIR } from '../lib/app-paths.ts';
 import { ffmpegCore } from '../lib/ffmpeg-core.ts';
-import { videoIngestionEngine } from '../lib/video-ingestion.ts';
+import { videoIngestionEngine, computeFileChecksum } from '../lib/video-ingestion.ts';
 import { VideoAnalyzerAgent } from './01-video-analyzer.ts';
 import { HighlightDetectionAgent } from './02-highlight-detector.ts';
 import { ClipExtractionAgent } from './03-clip-extractor.ts';
@@ -111,7 +111,7 @@ export class MasterAgentOrchestrator {
   }
 
   async processProject(
-    target: string | { projectId: string; sourceVideoId?: string; sourceFilePath?: string; sourceUrl?: string; jobId?: string; pairAuthorizedStream?: boolean },
+    target: string | { projectId: string; sourceVideoId?: string; sourceFilePath?: string; sourceChecksum?: string; sourceUrl?: string; jobId?: string; pairAuthorizedStream?: boolean },
     videoPathOrCb?: string | PipelineProgressCallback,
     onProgressCb?: PipelineProgressCallback
   ) {
@@ -119,8 +119,9 @@ export class MasterAgentOrchestrator {
     const projectId = isPayload ? target.projectId : target;
     let rawVideoPath = isPayload ? target.sourceFilePath : (videoPathOrCb as string);
     const sourceVideoId = isPayload ? target.sourceVideoId || `sv_${projectId}` : `sv_${projectId}`;
+    const expectedChecksum = isPayload ? (target as any).sourceChecksum : undefined;
+    const jobId = isPayload ? (target as any).jobId || `job_${projectId}` : `job_${projectId}`;
     const sourceUrl = isPayload ? target.sourceUrl : undefined;
-    const pairAuthorizedStream = isPayload ? target.pairAuthorizedStream !== false : true;
     const durationPreset = isPayload ? (target as any).durationPreset : undefined;
     const onProgress = isPayload ? undefined : (typeof videoPathOrCb === 'function' ? videoPathOrCb : onProgressCb);
 
@@ -218,8 +219,9 @@ export class MasterAgentOrchestrator {
       updateStage(1, 'validating', 'Validating source link', 'ACTIVE', 2, 'Validating source link & access permissions...');
 
       let validatedSourcePath = rawVideoPath;
+      const storagePaths = getProjectStoragePaths(projectId);
 
-      // Case A: YouTube URL supplied - validate format & availability
+      // Case A: YouTube URL supplied - require an authorized recording file
       if (sourceUrl) {
         const yt = videoIngestionEngine.parseYouTubeUrl(sourceUrl);
         if (!yt.isValid) {
@@ -228,35 +230,14 @@ export class MasterAgentOrchestrator {
           throw new Error(err);
         }
 
-        // Check if an authorized stream file already exists on disk
-        if (!validatedSourcePath || !fs.existsSync(validatedSourcePath)) {
-          const existingFile = videoIngestionEngine.findAuthorizedSourceFile(yt.videoId);
-          if (existingFile && fs.existsSync(existingFile)) {
-            validatedSourcePath = existingFile;
-          }
-        }
-
-        // If still not resolved, try quick acquisition probe or pair with authorized stream
-        if (!validatedSourcePath || !fs.existsSync(validatedSourcePath)) {
-          if (yt.videoId && yt.cleanUrl) {
-            const acquired = await videoIngestionEngine.acquireYouTubeStream(yt.videoId, yt.cleanUrl);
-            if (acquired) validatedSourcePath = acquired;
-          }
-        }
-
-        // Pair with authorized gameplay stream sample when enabled
-        if (!validatedSourcePath || !fs.existsSync(validatedSourcePath)) {
-          if (pairAuthorizedStream) {
-            const sampleStream = path.resolve(SAMPLES_DIR, 'gta6_authorized_gameplay_sample.mp4');
-            if (fs.existsSync(sampleStream)) {
-              console.log(`[Orchestrator] Paired YouTube metadata (${yt.videoId}) with authorized stream master.`);
-              validatedSourcePath = sampleStream;
-            }
-          }
+        // Check if an authorized stream file already exists on disk for this videoId
+        const existingFile = videoIngestionEngine.findAuthorizedSourceFile(yt.videoId);
+        if (existingFile && fs.existsSync(existingFile)) {
+          validatedSourcePath = existingFile;
         }
 
         if (!validatedSourcePath || !fs.existsSync(validatedSourcePath)) {
-          const err = 'Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.';
+          const err = 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.';
           updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
           dbRepo.updateProjectStatus(projectId, 'error', 2, 'Video file unavailable', { errorMessage: err });
           throw new Error(err);
@@ -265,10 +246,23 @@ export class MasterAgentOrchestrator {
 
       // Case B: Local video file supplied - verify existence
       if (!validatedSourcePath || !fs.existsSync(validatedSourcePath)) {
-        const err = 'Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.';
+        const err = 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.';
         updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
         dbRepo.updateProjectStatus(projectId, 'error', 2, 'Video file missing', { errorMessage: err });
         throw new Error(err);
+      }
+
+      // Ensure isolated project copy in storage/projects/<projectId>/source/
+      const ext = path.extname(validatedSourcePath) || '.mp4';
+      const projectIsolatedSource = path.join(storagePaths.sourceDir, `${projectId}_${sourceVideoId}_source${ext}`);
+      if (path.resolve(validatedSourcePath) !== path.resolve(projectIsolatedSource)) {
+        try {
+          fs.copyFileSync(validatedSourcePath, projectIsolatedSource);
+          validatedSourcePath = projectIsolatedSource;
+          console.log(`[Orchestrator] Created isolated project source copy: ${projectIsolatedSource}`);
+        } catch (copyErr: any) {
+          console.warn(`[Orchestrator] Note on source file isolation copy:`, copyErr.message);
+        }
       }
 
       // Verify read permissions before FFprobe
@@ -278,6 +272,15 @@ export class MasterAgentOrchestrator {
         const err = `Source video file cannot be read: ${accErr.message}`;
         updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
         dbRepo.updateProjectStatus(projectId, 'error', 2, 'Source file unreadable', { errorMessage: err });
+        throw new Error(err);
+      }
+
+      // Verify cryptographic SHA-256 checksum
+      const actualChecksum = computeFileChecksum(validatedSourcePath);
+      if (expectedChecksum && expectedChecksum !== actualChecksum) {
+        const err = `Source video checksum mismatch! Expected ${expectedChecksum}, got ${actualChecksum}`;
+        updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
+        dbRepo.updateProjectStatus(projectId, 'error', 2, 'Checksum mismatch', { errorMessage: err });
         throw new Error(err);
       }
 
@@ -316,6 +319,7 @@ export class MasterAgentOrchestrator {
         bitrate: probeMeta.bitrate,
         audioChannels: probeMeta.audioChannels,
         originSource: sourceUrl ? 'youtube_stream' : 'local_upload',
+        sha256Checksum: actualChecksum,
       });
 
       updateStage(
@@ -331,19 +335,7 @@ export class MasterAgentOrchestrator {
       // ================= STAGE 3: PROCESSING_SOURCE (10-20%) =================
       updateStage(3, 'source_processing', 'Processing authorized source video', 'ACTIVE', 12, 'Isolating gameplay footage & verifying channel integrity...');
 
-      const storagePaths = getProjectStoragePaths(projectId);
-      const ext = path.extname(validatedSourcePath) || '.mp4';
-      const projectIsolatedSource = path.join(storagePaths.sourceDir, `${projectId}_${sourceVideoId}_source${ext}`);
-
-      if (path.resolve(validatedSourcePath) !== path.resolve(projectIsolatedSource) && !fs.existsSync(projectIsolatedSource)) {
-        try {
-          fs.copyFileSync(validatedSourcePath, projectIsolatedSource);
-          console.log(`[Orchestrator] ✓ Isolated source video to project directory: ${projectIsolatedSource}`);
-        } catch (copyErr: any) {
-          console.warn(`[Orchestrator] Note on source isolation:`, copyErr.message);
-        }
-      }
-      const videoPath = fs.existsSync(projectIsolatedSource) ? projectIsolatedSource : validatedSourcePath;
+      const videoPath = validatedSourcePath;
 
       updateStage(3, 'source_processing', 'Processing authorized source video', 'COMPLETED', 20, '✓ Source video isolated to project workspace.');
       if (checkCancellation()) return { projectId, cancelled: true };
@@ -397,8 +389,16 @@ export class MasterAgentOrchestrator {
         sourceVideoPath: videoPath,
         highlights,
         sourceVideoId,
+        sourceChecksum: actualChecksum,
+        jobId,
       });
       if (checkCancellation()) return { projectId, cancelled: true };
+
+      if (!extractedClips || extractedClips.length === 0) {
+        const err = 'Clip extraction failed: 0 clips were extracted from the source video.';
+        updateStage(6, 'extracting', 'Extracting clips', 'FAILED', 46, err);
+        throw new Error(err);
+      }
 
       updateStage(
         6,
@@ -464,6 +464,8 @@ export class MasterAgentOrchestrator {
           duration: clip.duration,
           sourceVideoId,
           highlightId: clip.highlightId,
+          sourceChecksum: actualChecksum,
+          jobId,
           layoutMode: 'blurred_background',
           memeConfig,
           musicConfig,
@@ -481,6 +483,12 @@ export class MasterAgentOrchestrator {
         });
 
         updateStage(7, 'editing', 'Editing clips', 'ACTIVE', clipProgress, `Composed Clip ${i + 1}/${extractedClips.length} in 9:16 vertical 1080x1920 format.`);
+      }
+
+      if (editedResults.length === 0) {
+        const err = 'Clip editing failed: 0 vertical compositions were rendered.';
+        updateStage(7, 'editing', 'Editing clips', 'FAILED', 61, err);
+        throw new Error(err);
       }
 
       updateStage(7, 'editing', 'Editing clips', 'COMPLETED', 80, `✓ Rendered 9:16 vertical compositions for all ${extractedClips.length} clips.`);
@@ -538,6 +546,12 @@ export class MasterAgentOrchestrator {
         updateStage(9, 'qa', 'Running quality checks', 'ACTIVE', qaProgress, `Audited Clip ${i + 1}/${editedResults.length}: QA Score ${qaReport.qaScore}/100, Copyright 100%`);
       }
 
+      if (verifiedClips.length === 0) {
+        const err = 'Quality assurance failed: 0 clips passed visual and compliance audits.';
+        updateStage(9, 'qa', 'Running quality checks', 'FAILED', 89, err);
+        throw new Error(err);
+      }
+
       updateStage(9, 'qa', 'Running quality checks', 'COMPLETED', 95, `✓ Quality assurance passed for ${verifiedClips.length} clips.`);
       if (checkCancellation()) return { projectId, cancelled: true };
 
@@ -568,6 +582,18 @@ export class MasterAgentOrchestrator {
         });
 
         updateStage(10, 'export', 'Exporting final videos', 'ACTIVE', exportProgress, `Packaged Clip ${i + 1}/${verifiedClips.length} deliverables.`);
+      }
+
+      if (processedClips.length === 0) {
+        const err = 'Export failed: No valid 9:16 vertical clips were rendered or verified.';
+        updateStage(10, 'export', 'Exporting final videos', 'FAILED', 96, err);
+        dbRepo.updateProjectStatus(projectId, 'error', 0, err, {
+          stageId: '10',
+          stageStatus: 'FAILED',
+          errorMessage: err,
+          workerId,
+        });
+        throw new Error(err);
       }
 
       updateStage(10, 'export', 'Exporting final videos', 'COMPLETED', 100, `✓ All ${processedClips.length} Shorts packaged and ready for export!`);

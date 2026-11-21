@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" fill="none">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#194350" />
+      <stop offset="100%" stop-color="#0c1b21" />
+    </linearGradient>
+    <linearGradient id="coralGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff8882" />
+      <stop offset="100%" stop-color="#fa6860" />
+    </linearGradient>
+    <linearGradient id="peachGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffc2b4" />
+      <stop offset="100%" stop-color="#ffb09e" />
+    </linearGradient>
+    <linearGradient id="visorGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#9dbeb8" />
+      <stop offset="50%" stop-color="#ffc2b4" />
+      <stop offset="100%" stop-color="#9dbeb8" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Outer Circle Container -->
+  <circle cx="60" cy="60" r="58" fill="url(#bgGrad)" stroke="#ff8882" stroke-width="2.5" />
+
+  <!-- Background Ambient Glow -->
+  <circle cx="60" cy="45" r="28" fill="#ff8882" opacity="0.15" filter="url(#glow)" />
+
+  <!-- Headphone Arc -->
+  <path d="M 28 62 C 28 32 92 32 92 62" stroke="url(#coralGrad)" stroke-width="6" stroke-linecap="round" fill="none" />
+
+  <!-- Head Outline / Skin -->
+  <rect x="42" y="38" width="36" height="42" rx="18" fill="url(#peachGrad)" />
+
+  <!-- Modern Hair Silhouette -->
+  <path d="M 38 46 C 38 30 52 26 62 26 C 74 26 82 31 82 42 C 78 38 72 37 66 38 C 58 39 50 43 44 49 Z" fill="#194350" />
+
+  <!-- Gaming Visor / Glasses -->
+  <path d="M 40 52 C 40 50 42 48 45 48 L 75 48 C 78 48 80 50 80 52 L 78 61 C 77 63 75 64 73 64 L 47 64 C 45 64 43 63 42 61 Z" fill="#194350" stroke="#9dbeb8" stroke-width="1.5" />
+  <path d="M 44 52 L 76 52 L 74 58 L 46 58 Z" fill="url(#visorGrad)" opacity="0.9" />
+
+  <!-- Specular Reflection on Visor -->
+  <path d="M 48 53 L 56 53 L 52 57 L 46 57 Z" fill="#ffffff" opacity="0.75" />
+
+  <!-- Headphone Ear Pads -->
+  <rect x="23" y="52" width="10" height="22" rx="5" fill="#194350" stroke="#ff8882" stroke-width="2" />
+  <rect x="87" y="52" width="10" height="22" rx="5" fill="#194350" stroke="#ff8882" stroke-width="2" />
+  <circle cx="28" cy="63" r="2.5" fill="#ff8882" />
+  <circle cx="92" cy="63" r="2.5" fill="#ff8882" />
+
+  <!-- Headphone Boom Mic -->
+  <path d="M 28 68 C 28 78 40 86 52 86" stroke="#9dbeb8" stroke-width="2" stroke-linecap="round" fill="none" />
+  <circle cx="53" cy="86" r="3" fill="#ff8882" />
+
+  <!-- Torso / Jacket Collar -->
+  <path d="M 32 110 C 32 94 44 88 60 88 C 76 88 88 94 88 110 Z" fill="#194350" stroke="#9dbeb8" stroke-width="1.5" />
+  <path d="M 60 88 L 60 110" stroke="#ff8882" stroke-width="2" />
+  <path d="M 48 94 L 60 102 L 72 94" stroke="#ffc2b4" stroke-width="1.5" fill="none" />
+</svg>

@@ -13,7 +13,7 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       {/* Main Content Area with Header */}
-      <div className="flex flex-1 flex-col overflow-hidden min-w-0">
+      <div className="flex flex-1 flex-col overflow-hidden min-w-0 bg-background transition-colors duration-150">
         <Header onToggleSidebar={() => setSidebarOpen((prev) => !prev)} />
 
         <main className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 bg-background transition-colors duration-150">

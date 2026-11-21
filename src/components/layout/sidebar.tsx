@@ -81,6 +81,13 @@ const navGroups: NavGroup[] = [
         href: '/highlights',
         icon: Flame,
       },
+      {
+        title: 'Publishing Center',
+        href: '/publishing',
+        icon: Share2,
+        badge: 'Live',
+        badgeVariant: 'coral',
+      },
     ],
   },
   {

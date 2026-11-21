@@ -256,18 +256,28 @@ export class MasterAgentOrchestrator {
         }
 
         if (!validatedSourcePath || !fs.existsSync(validatedSourcePath)) {
-          const err = `Failed to acquire video stream for YouTube link (${yt.videoId}). Acquisition failed or video is unavailable. Halting pipeline.`;
+          const err = 'Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.';
           updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
-          dbRepo.updateProjectStatus(projectId, 'error', 2, 'Video acquisition failed', { errorMessage: err });
+          dbRepo.updateProjectStatus(projectId, 'error', 2, 'Video file unavailable', { errorMessage: err });
           throw new Error(err);
         }
       }
 
       // Case B: Local video file supplied - verify existence
       if (!validatedSourcePath || !fs.existsSync(validatedSourcePath)) {
-        const err = `No accessible video source found at "${validatedSourcePath}". Please upload or attach a valid recording.`;
+        const err = 'Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.';
         updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
         dbRepo.updateProjectStatus(projectId, 'error', 2, 'Video file missing', { errorMessage: err });
+        throw new Error(err);
+      }
+
+      // Verify read permissions before FFprobe
+      try {
+        fs.accessSync(validatedSourcePath, fs.constants.R_OK);
+      } catch (accErr: any) {
+        const err = `Source video file cannot be read: ${accErr.message}`;
+        updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
+        dbRepo.updateProjectStatus(projectId, 'error', 2, 'Source file unreadable', { errorMessage: err });
         throw new Error(err);
       }
 

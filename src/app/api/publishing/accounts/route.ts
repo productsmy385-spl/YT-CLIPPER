@@ -1,36 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { dbRepo } from '@/db/repository';
-import { youtubeClient } from '@/lib/publishing/youtube-client';
+import { youtubeOAuth } from '@/lib/youtube/oauth';
 import { instagramClient } from '@/lib/publishing/instagram-client';
 
 export async function GET() {
   try {
-    const [ytStatus, igStatus] = await Promise.all([
-      youtubeClient.getStatus(),
+    const [ytReport, igStatus] = await Promise.all([
+      youtubeOAuth.getStatusReport(),
       instagramClient.getStatus(),
     ]);
 
     const accounts: any[] = [];
 
-    // 1. YouTube Account Record
-    if (ytStatus.channel || ytStatus.connected || ytStatus.status === 'expired') {
-      accounts.push({
-        platform: 'youtube',
-        platformLabel: 'YouTube Shorts (Data API v3)',
-        accountName: ytStatus.channel?.title || 'YouTube Channel',
-        accountId: ytStatus.channel?.id || 'yt_connected_channel',
-        customUrl: ytStatus.channel?.customUrl || null,
-        profileImageUrl: ytStatus.channel?.thumbnailUrl || null,
-        subscribers: ytStatus.channel?.subscribers || null,
-        videos: ytStatus.channel?.videos || null,
-        status: ytStatus.status, // 'connected' | 'expired' | 'disconnected'
-        needsReconnect: ytStatus.needsReconnect,
-        scopes: ytStatus.scopes,
-        projectId: ytStatus.projectId,
-        expiresAt: ytStatus.tokenExpiresAt,
-        error: ytStatus.error || null,
-      });
-    }
+    // 1. Real YouTube Account Record
+    accounts.push({
+      platform: 'youtube',
+      platformLabel: 'YouTube Shorts (Data API v3)',
+      accountName: ytReport.channel?.title || 'YouTube Channel',
+      accountId: ytReport.channel?.id || null,
+      customUrl: ytReport.channel?.customUrl || null,
+      profileImageUrl: ytReport.channel?.thumbnailUrl || null,
+      subscribers: ytReport.channel?.subscribers || null,
+      videos: ytReport.channel?.videos || null,
+      accountEmail: ytReport.channel?.email || null,
+      status: ytReport.state, // NOT_CONNECTED, CONNECTED, TOKEN_EXPIRED, etc.
+      connected: ytReport.connected,
+      needsReconnect: ytReport.state === 'TOKEN_EXPIRED' || ytReport.state === 'REAUTH_REQUIRED',
+      scopes: ytReport.scopes,
+      expiresAt: ytReport.channel?.tokenExpiresAt || null,
+      error: ytReport.error || null,
+      canUpload: ytReport.canUpload,
+      canSchedule: ytReport.canSchedule,
+      lastChecked: ytReport.lastChecked,
+    });
 
     // 2. Instagram Account Record
     if (igStatus.connected && igStatus.account) {
@@ -42,7 +43,8 @@ export async function GET() {
         profileImageUrl: igStatus.account.profilePictureUrl || null,
         accountType: igStatus.account.accountType,
         followers: igStatus.account.followersCount || null,
-        status: 'connected',
+        status: 'CONNECTED',
+        connected: true,
         needsReconnect: false,
       });
     } else {
@@ -52,7 +54,8 @@ export async function GET() {
         accountName: 'Meta Professional Account',
         accountId: null,
         profileImageUrl: null,
-        status: 'disconnected',
+        status: 'NOT_CONNECTED',
+        connected: false,
         needsReconnect: true,
         error: igStatus.error || 'Instagram account not connected.',
       });
@@ -61,7 +64,7 @@ export async function GET() {
     return NextResponse.json({
       success: true,
       accounts,
-      youtube: ytStatus,
+      youtube: ytReport,
       instagram: igStatus,
     });
   } catch (error: any) {
@@ -74,19 +77,14 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { action } = body;
 
-    if (action === 'reconnect_youtube') {
-      const res = await youtubeClient.reconnect();
-      return NextResponse.json(res);
-    }
-
     if (action === 'disconnect_youtube') {
-      const res = await youtubeClient.disconnect();
+      const res = await youtubeOAuth.disconnect();
       return NextResponse.json(res);
     }
 
     if (action === 'refresh_youtube') {
-      const status = await youtubeClient.getStatus();
-      return NextResponse.json({ success: true, status });
+      const report = await youtubeOAuth.getStatusReport();
+      return NextResponse.json({ success: true, report });
     }
 
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 });

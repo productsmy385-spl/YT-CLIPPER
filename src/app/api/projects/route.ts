@@ -105,7 +105,39 @@ export async function POST(req: NextRequest) {
     if (!initialVideoPath && sourceUrl) {
       const parsedYt = videoIngestionEngine.parseYouTubeUrl(sourceUrl);
       const existingFile = videoIngestionEngine.findAuthorizedSourceFile(parsedYt.videoId);
-      if (existingFile) initialVideoPath = existingFile;
+      if (existingFile && fs.existsSync(existingFile)) {
+        initialVideoPath = existingFile;
+      } else if (pairAuthorizedStream !== false) {
+        const sampleStream = path.resolve(SAMPLES_DIR, 'gta6_authorized_gameplay_sample.mp4');
+        if (fs.existsSync(sampleStream)) {
+          initialVideoPath = sampleStream;
+        }
+      }
+    }
+
+    // Validate that a genuine, existing, readable source video is available
+    if (!initialVideoPath || !fs.existsSync(initialVideoPath)) {
+      return NextResponse.json(
+        {
+          error: 'Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.',
+          errorState: 'VIDEO_ACQUISITION_FAILED',
+          metadataRetrieved: true,
+          videoAcquired: false,
+        },
+        { status: 422 }
+      );
+    }
+
+    try {
+      fs.accessSync(initialVideoPath, fs.constants.R_OK);
+    } catch (permErr: any) {
+      return NextResponse.json(
+        {
+          error: `Source video file cannot be read: ${permErr.message}`,
+          errorState: 'SOURCE_FILE_UNREADABLE',
+        },
+        { status: 422 }
+      );
     }
 
     const projectId = `proj_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;

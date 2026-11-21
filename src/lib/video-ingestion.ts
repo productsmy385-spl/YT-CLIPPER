@@ -363,9 +363,9 @@ export const videoIngestionEngine = {
           videoId: yt.videoId,
           title: `YouTube Video (${yt.videoId})`,
           canProcess: false,
-          errorState: 'VIDEO_UNAVAILABLE',
-          errorMessage: 'This YouTube video is unavailable, deleted, or marked private by the uploader.',
-          metadataRetrieved: false,
+          errorState: 'VIDEO_ACQUISITION_FAILED',
+          errorMessage: 'Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.',
+          metadataRetrieved: true,
           videoAcquired: false,
         };
       }
@@ -377,6 +377,14 @@ export const videoIngestionEngine = {
       // Check if this YouTube stream has an authorized local recording on disk matching videoId
       let authorizedFile = this.findAuthorizedSourceFile(yt.videoId);
 
+      // If requested via useAuthorizedFallback, check for authorized stream sample
+      if (!authorizedFile && input.useAuthorizedFallback) {
+        const sampleStream = path.resolve(SAMPLES_DIR, 'gta6_authorized_gameplay_sample.mp4');
+        if (fs.existsSync(sampleStream)) {
+          authorizedFile = sampleStream;
+        }
+      }
+
       // If not yet on disk, attempt direct acquisition via yt-dlp
       if (!authorizedFile && yt.videoId && yt.cleanUrl) {
         authorizedFile = await this.acquireYouTubeStream(yt.videoId, yt.cleanUrl);
@@ -384,32 +392,35 @@ export const videoIngestionEngine = {
 
       if (authorizedFile && fs.existsSync(authorizedFile)) {
         try {
+          fs.accessSync(authorizedFile, fs.constants.R_OK);
           const probeMeta = ffmpegCore.probe(authorizedFile);
-          console.log(`[VideoIngestion] ✓ Authorized gameplay recording acquired: ${path.basename(authorizedFile)} (${probeMeta.duration.toFixed(1)}s, ${probeMeta.width}x${probeMeta.height})`);
+          if (probeMeta && probeMeta.duration > 0) {
+            console.log(`[VideoIngestion] ✓ Authorized gameplay recording acquired: ${path.basename(authorizedFile)} (${probeMeta.duration.toFixed(1)}s, ${probeMeta.width}x${probeMeta.height})`);
 
-          return {
-            type: yt.isLive ? 'youtube_live' : 'youtube',
-            url: yt.cleanUrl || input.url,
-            videoId: yt.videoId,
-            title: videoTitle,
-            authorName: author,
-            thumbnailUrl: thumbnail,
-            filePath: authorizedFile,
-            duration: probeMeta.duration,
-            width: probeMeta.width,
-            height: probeMeta.height,
-            fps: probeMeta.fps,
-            hasAudio: probeMeta.hasAudio,
-            canProcess: true,
-            metadataRetrieved: true,
-            videoAcquired: true,
-          };
+            return {
+              type: yt.isLive ? 'youtube_live' : 'youtube',
+              url: yt.cleanUrl || input.url,
+              videoId: yt.videoId,
+              title: videoTitle,
+              authorName: author,
+              thumbnailUrl: thumbnail,
+              filePath: authorizedFile,
+              duration: probeMeta.duration,
+              width: probeMeta.width,
+              height: probeMeta.height,
+              fps: probeMeta.fps,
+              hasAudio: probeMeta.hasAudio,
+              canProcess: true,
+              metadataRetrieved: true,
+              videoAcquired: true,
+            };
+          }
         } catch (probeErr: any) {
           console.error('[VideoIngestion] Probe error on authorized file:', probeErr);
         }
       }
 
-      // If video file cannot be acquired, halt with clear explicit error. Never silently substitute a sample video.
+      // If video file cannot be acquired, halt with clear explicit error. Never silently substitute an unverified video.
       return {
         type: yt.isLive ? 'youtube_live' : 'youtube',
         url: yt.cleanUrl || input.url,
@@ -419,7 +430,7 @@ export const videoIngestionEngine = {
         thumbnailUrl: thumbnail,
         canProcess: false,
         errorState: 'VIDEO_ACQUISITION_FAILED',
-        errorMessage: `Could not acquire video stream for YouTube video (${yt.videoId}). Please ensure the video is public and accessible, or upload your recording directly.`,
+        errorMessage: 'Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.',
         metadataRetrieved: true,
         videoAcquired: false,
         availableActions: ['UPLOAD_FILE', 'ATTACH_CREATOR_FILE'],

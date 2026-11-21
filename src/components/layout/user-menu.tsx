@@ -33,7 +33,7 @@ export function UserMenu() {
     name: 'Vice City Studios',
     email: 'creator@vicecity.io',
     role: 'Studio Director',
-    avatarUrl: null,
+    avatarUrl: '/avatars/creator.svg',
     initials: 'VC',
   });
 

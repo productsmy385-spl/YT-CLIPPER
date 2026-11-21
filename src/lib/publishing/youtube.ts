@@ -1,5 +1,6 @@
 import fs from 'node:fs';
-import { youtubeClient } from './youtube-client.ts';
+import { youtubeOAuth } from '../youtube/oauth';
+import { youtubeUploader } from '../youtube/uploader';
 
 export interface YouTubePublishParams {
   filePath: string;
@@ -25,20 +26,15 @@ export interface PublishResult {
 export const youtubeService = {
   // Inspect existing YouTube account connection
   async getStatus() {
-    return await youtubeClient.getStatus();
-  },
-
-  // Reconnect YouTube channel
-  async reconnect() {
-    return await youtubeClient.reconnect();
+    return await youtubeOAuth.getStatusReport();
   },
 
   // Disconnect YouTube channel
   async disconnect() {
-    return await youtubeClient.disconnect();
+    return await youtubeOAuth.disconnect();
   },
 
-  // Publish video to YouTube Shorts using official YouTube Data API v3
+  // Publish video to YouTube Shorts using official YouTube Data API v3 Resumable Upload
   async publish(params: YouTubePublishParams): Promise<PublishResult> {
     const { filePath, title, description, tags = ['shorts', 'gta6', 'gaming'], privacyStatus = 'public', publishAt } = params;
 
@@ -51,7 +47,7 @@ export const youtubeService = {
     }
 
     try {
-      const result = await youtubeClient.uploadShort({
+      const result = await youtubeUploader.upload({
         filePath,
         title,
         description,
@@ -63,7 +59,7 @@ export const youtubeService = {
       return {
         success: result.success,
         platform: 'youtube_shorts',
-        platformPostId: result.platformPostId,
+        platformPostId: result.videoId,
         publishedUrl: result.publishedUrl,
         studioUrl: result.studioUrl,
         details: result.details,

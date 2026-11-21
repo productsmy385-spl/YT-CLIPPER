@@ -23,14 +23,28 @@ export class MusicSelectionAgent extends BaseAgent<{ clipId: string; preferredGe
     input: { clipId: string; preferredGenre: string; duration: number }
   ): Promise<MusicSelectionResult> {
     const allTracks = dbRepo.getMusicAssets();
-    const matched = allTracks.find((m) => m.genre === input.preferredGenre) || allTracks[0];
+    const fallbackTrack = {
+      id: 'mus_fallback',
+      title: 'Vice Phonk Beat',
+      genre: 'phonk' as const,
+      bpm: 130,
+      energy: 'high' as const,
+      filePath: '/assets/music/mus_phonk_drift.mp3',
+      duration: 60,
+      licenseDetails: 'verified_creator_safe',
+    };
+    const matched = (allTracks && allTracks.length > 0)
+      ? (allTracks.find((m) => m.genre === input.preferredGenre) || allTracks[0])
+      : fallbackTrack;
 
-    const absPath = path.resolve(PUBLIC_DIR, matched.filePath.replace(/^\//, ''));
+    const safeTrack = matched || fallbackTrack;
+    const rawPath = safeTrack?.filePath || fallbackTrack.filePath;
+    const absPath = path.resolve(PUBLIC_DIR, rawPath.replace(/^\//, ''));
 
     return {
       clipId: input.clipId,
       selectedMusic: {
-        ...matched,
+        ...safeTrack,
         filePath: absPath,
       },
       duckingDb: -16.0,

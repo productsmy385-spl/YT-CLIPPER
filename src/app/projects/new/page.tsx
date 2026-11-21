@@ -311,8 +311,10 @@ export default function CreateShortsPage() {
       const data = await res.json();
       if (data.sourceInfo) {
         setYtMeta(data.sourceInfo);
-        if (data.sourceInfo.canProcess && data.sourceInfo.title && !data.sourceInfo.title.includes('Invalid')) {
-          setTitle((prev) => (prev && prev.trim().length > 0 ? prev : data.sourceInfo.title));
+        if (data.sourceInfo.canProcess && data.sourceInfo.title && !data.sourceInfo.title.toLowerCase().includes('invalid')) {
+          setTitle((prev) => (prev && prev.trim().length > 0 && !prev.toLowerCase().includes('invalid') ? prev : data.sourceInfo.title));
+        } else if (title.toLowerCase().includes('invalid')) {
+          setTitle('');
         }
       }
     } catch (err: any) {
@@ -440,6 +442,10 @@ export default function CreateShortsPage() {
     } else {
       if (!youtubeUrl.trim()) {
         setSubmitError('Please enter a YouTube video or stream link.');
+        return;
+      }
+      if (!pairAuthorizedStream && (!ytMeta || !ytMeta.canProcess)) {
+        setSubmitError('Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.');
         return;
       }
     }
@@ -893,7 +899,9 @@ export default function CreateShortsPage() {
                           {ytMeta.authorName || 'Gaming Streamer'}
                         </span>
                       </div>
-                      <h4 className="font-bold text-xs text-foreground truncate">{ytMeta.title}</h4>
+                      <h4 className="font-bold text-xs text-foreground truncate">
+                        {ytMeta.title?.toLowerCase().includes('invalid') ? 'YouTube Source Validation Notice' : ytMeta.title}
+                      </h4>
                       <p className="text-[11px] text-muted-foreground">
                         Video ID: <span className="font-mono text-foreground font-bold">{ytMeta.videoId || 'Not Extracted'}</span>
                       </p>
@@ -919,7 +927,11 @@ export default function CreateShortsPage() {
                       </span>
                     </label>
 
-                    {ytMeta.canProcess ? (
+                    {!ytMeta.canProcess && !pairAuthorizedStream ? (
+                      <span className="text-[11px] text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1">
+                        <AlertCircle className="w-3.5 h-3.5" /> Source File Required
+                      </span>
+                    ) : ytMeta.canProcess || pairAuthorizedStream ? (
                       <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
                         <CheckCircle2 className="w-3.5 h-3.5" /> Source File Ready
                       </span>
@@ -1020,7 +1032,7 @@ export default function CreateShortsPage() {
               </label>
               <input
                 type="text"
-                value={title}
+                value={title?.toLowerCase().includes('invalid') ? '' : title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="e.g. GTA 6 Vice City Insane Police Chase #01"
                 className="w-full px-3 py-2 rounded-lg border border-border bg-input text-foreground text-xs focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"

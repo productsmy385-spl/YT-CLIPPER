@@ -23,31 +23,37 @@ export class MemeResearchAgent extends BaseAgent<{ clipId: string; mood: string;
     input: { clipId: string; mood: string; clipDuration: number }
   ): Promise<MemeSelectionResult> {
     const allMemes = dbRepo.getMemeAssets();
-    // Find meme matching emotion or fallback to first
-    const matched = allMemes.find((m) => m.emotion === input.mood) || allMemes[0] || {
+    const fallbackMeme = {
       id: 'meme_fallback',
       name: 'Shock Reaction',
-      emotion: 'shock',
+      emotion: 'shock' as const,
       filePath: '/assets/memes/meme_shock_eyes.png',
       duration: 2.0,
-      overlayType: 'pip_corner',
-      licenseStatus: 'verified_cc0',
+      overlayType: 'pip_corner' as const,
+      licenseStatus: 'verified_cc0' as const,
     };
+    // Find meme matching emotion or fallback
+    const matched = (allMemes && allMemes.length > 0)
+      ? (allMemes.find((m) => m.emotion === input.mood) || allMemes[0])
+      : fallbackMeme;
+
+    const safeMeme = matched || fallbackMeme;
+    const rawPath = safeMeme?.filePath || fallbackMeme.filePath;
 
     // Place meme right at peak comedic/action event (around 60% through clip)
     const placementTimestamp = Math.min(input.clipDuration - 3.0, Math.max(2.0, input.clipDuration * 0.55));
 
     // Resolve absolute path to meme asset
-    const absPath = path.resolve(PUBLIC_DIR, matched.filePath.replace(/^\//, ''));
+    const absPath = path.resolve(PUBLIC_DIR, rawPath.replace(/^\//, ''));
 
     return {
       clipId: input.clipId,
       selectedMeme: {
-        ...matched,
+        ...safeMeme,
         filePath: absPath,
       },
       placementTimestamp: Number(placementTimestamp.toFixed(2)),
-      duration: Math.min(2.5, matched.duration),
+      duration: Math.min(2.5, safeMeme?.duration || 2.0),
       position: 'top_right',
     };
   }

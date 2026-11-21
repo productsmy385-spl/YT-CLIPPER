@@ -217,10 +217,12 @@ export const dbRepo = {
       // Seed default user if not exists
       const now = new Date().toISOString();
       rawDb.prepare(`
-        INSERT OR IGNORE INTO users (id, email, name, role, created_at, updated_at)
-        VALUES ('usr_creator_01', 'creator@vicecity.io', 'Vice City Studios', 'admin', ?, ?)
+        INSERT OR IGNORE INTO users (id, email, name, role, avatar_url, created_at, updated_at)
+        VALUES ('usr_creator_01', 'creator@vicecity.io', 'Vice City Studios', 'admin', '/avatars/creator.svg', ?, ?)
       `).run(now, now);
       user = stmt.get(id) as any;
+    } else if (!user.avatar_url) {
+      user.avatar_url = '/avatars/creator.svg';
     }
     return user;
   },
@@ -861,6 +863,11 @@ export const dbRepo = {
     return stmt.get(accountId);
   },
 
+  deleteConnectedAccount(accountId: string) {
+    rawDb.prepare(`DELETE FROM social_oauth_tokens WHERE account_id = ?`).run(accountId);
+    rawDb.prepare(`DELETE FROM connected_social_accounts WHERE id = ?`).run(accountId);
+  },
+
   createScheduledPost(data: {
     id: string;
     userId: string;
@@ -894,32 +901,43 @@ export const dbRepo = {
   },
 
   getScheduledPosts(status?: string) {
-    if (status) {
-      const stmt = rawDb.prepare(`
-        SELECT sp.*, ef.title, ef.file_path, ef.download_url, ca.account_name, ca.platform as ca_platform
-        FROM scheduled_posts sp
-        LEFT JOIN export_files ef ON sp.export_file_id = ef.id
-        LEFT JOIN connected_social_accounts ca ON sp.connected_account_id = ca.id
-        WHERE sp.status = ?
-        ORDER BY sp.scheduled_at ASC
-      `);
-      return stmt.all(status);
-    }
-    const stmt = rawDb.prepare(`
-      SELECT sp.*, ef.title, ef.file_path, ef.download_url, ca.account_name, ca.platform as ca_platform
+    const baseQuery = `
+      SELECT sp.*,
+        COALESCE(ef.title, gc.title, 'GTA 6 Highlight') as title,
+        COALESCE(ef.description, 'GTA 6 Vice City action gameplay short! #shorts #gta6') as description,
+        COALESCE(ef.tags, 'gta6, shorts, gaming, vicecity') as tags,
+        COALESCE(ef.file_path, gc.output_path, gc.raw_clip_path) as file_path,
+        COALESCE(ef.download_url, '/api/media/preview?id=' || gc.id) as download_url,
+        COALESCE(gc.duration, 30) as duration,
+        COALESCE(gc.resolution, '1080x1920') as resolution,
+        ca.account_name, ca.platform as ca_platform
       FROM scheduled_posts sp
       LEFT JOIN export_files ef ON sp.export_file_id = ef.id
+      LEFT JOIN generated_clips gc ON sp.export_file_id = gc.id
       LEFT JOIN connected_social_accounts ca ON sp.connected_account_id = ca.id
-      ORDER BY sp.scheduled_at ASC
-    `);
+    `;
+    if (status) {
+      const stmt = rawDb.prepare(`${baseQuery} WHERE sp.status = ? ORDER BY sp.scheduled_at ASC`);
+      return stmt.all(status);
+    }
+    const stmt = rawDb.prepare(`${baseQuery} ORDER BY sp.scheduled_at ASC`);
     return stmt.all();
   },
 
   getScheduledPostById(id: string) {
     const stmt = rawDb.prepare(`
-      SELECT sp.*, ef.title, ef.description, ef.tags, ef.file_path, ef.download_url, ca.account_name, ca.account_id as ca_account_id
+      SELECT sp.*,
+        COALESCE(ef.title, gc.title, 'GTA 6 Highlight') as title,
+        COALESCE(ef.description, 'GTA 6 Vice City action gameplay short! #shorts #gta6') as description,
+        COALESCE(ef.tags, 'gta6, shorts, gaming, vicecity') as tags,
+        COALESCE(ef.file_path, gc.output_path, gc.raw_clip_path) as file_path,
+        COALESCE(ef.download_url, '/api/media/preview?id=' || gc.id) as download_url,
+        COALESCE(gc.duration, 30) as duration,
+        COALESCE(gc.resolution, '1080x1920') as resolution,
+        ca.account_name, ca.account_id as ca_account_id, ca.platform as ca_platform
       FROM scheduled_posts sp
       LEFT JOIN export_files ef ON sp.export_file_id = ef.id
+      LEFT JOIN generated_clips gc ON sp.export_file_id = gc.id
       LEFT JOIN connected_social_accounts ca ON sp.connected_account_id = ca.id
       WHERE sp.id = ?
     `);
@@ -929,14 +947,26 @@ export const dbRepo = {
   getDueScheduledPosts() {
     const now = new Date().toISOString();
     const stmt = rawDb.prepare(`
-      SELECT sp.*, ef.title, ef.description, ef.tags, ef.file_path, ca.account_name, ca.account_id as ca_account_id
+      SELECT sp.*,
+        COALESCE(ef.title, gc.title, 'GTA 6 Highlight') as title,
+        COALESCE(ef.description, 'GTA 6 Vice City action gameplay short! #shorts #gta6') as description,
+        COALESCE(ef.tags, 'gta6, shorts, gaming, vicecity') as tags,
+        COALESCE(ef.file_path, gc.output_path, gc.raw_clip_path) as file_path,
+        ca.account_name, ca.account_id as ca_account_id, ca.platform as ca_platform
       FROM scheduled_posts sp
       LEFT JOIN export_files ef ON sp.export_file_id = ef.id
+      LEFT JOIN generated_clips gc ON sp.export_file_id = gc.id
       LEFT JOIN connected_social_accounts ca ON sp.connected_account_id = ca.id
       WHERE sp.status = 'SCHEDULED' AND sp.scheduled_at <= ?
       ORDER BY sp.scheduled_at ASC
     `);
     return stmt.all(now);
+  },
+
+  cancelScheduledPost(id: string) {
+    const now = new Date().toISOString();
+    rawDb.prepare(`UPDATE scheduled_posts SET status = 'CANCELLED', updated_at = ? WHERE id = ?`).run(now, id);
+    return this.getScheduledPostById(id);
   },
 
   updateScheduledPostStatus(id: string, status: string, details?: { platformPostId?: string; publishedUrl?: string; lastError?: string }) {
@@ -947,6 +977,27 @@ export const dbRepo = {
       WHERE id = ?
     `);
     stmt.run(status, details?.platformPostId || null, details?.publishedUrl || null, details?.lastError || null, now, id);
+  },
+
+  updateScheduledPost(id: string, updates: { scheduled_at?: string; timezone?: string; status?: string }) {
+    const now = new Date().toISOString();
+    const sets: string[] = ['updated_at = ?'];
+    const values: any[] = [now];
+    if (updates.scheduled_at) {
+      sets.push('scheduled_at = ?');
+      values.push(updates.scheduled_at);
+    }
+    if (updates.timezone) {
+      sets.push('timezone = ?');
+      values.push(updates.timezone);
+    }
+    if (updates.status) {
+      sets.push('status = ?');
+      values.push(updates.status);
+    }
+    values.push(id);
+    const sql = `UPDATE scheduled_posts SET ${sets.join(', ')} WHERE id = ?`;
+    rawDb.prepare(sql).run(...values);
   },
 
   incrementScheduledPostRetry(id: string, error: string) {

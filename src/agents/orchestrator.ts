@@ -221,10 +221,10 @@ export class MasterAgentOrchestrator {
       let validatedSourcePath = rawVideoPath;
       const storagePaths = getProjectStoragePaths(projectId);
 
-      // Case A: YouTube URL supplied - require an authorized recording file
+      // Case A: YouTube URL supplied - acquire stream if not yet on disk
       if (sourceUrl) {
         const yt = videoIngestionEngine.parseYouTubeUrl(sourceUrl);
-        if (!yt.isValid) {
+        if (!yt.isValid || !yt.videoId) {
           const err = 'Invalid YouTube video URL format. Supported formats: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/shorts/ID.';
           updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
           throw new Error(err);

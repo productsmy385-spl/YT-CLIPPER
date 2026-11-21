@@ -83,7 +83,7 @@ export class VideoEditingAgent extends BaseAgent<VideoEditingInput, VideoEditing
     console.log(`[VideoEditingAgent] Layout: ${input.layoutMode || 'blurred_background'} | Source: ${input.rawClipPath}`);
 
     // Programmatic 9:16 Vertical Composition
-    ffmpegCore.renderVerticalShort({
+    await ffmpegCore.renderVerticalShort({
       sourceClip: input.rawClipPath,
       outputPath: finalVideoPath,
       duration: input.duration,

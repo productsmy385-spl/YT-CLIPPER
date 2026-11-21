@@ -85,7 +85,7 @@ export class ClipExtractionAgent extends BaseAgent<{ sourceVideoPath: string; hi
       }
 
       console.log(`[ClipExtractionAgent] Extracting Clip ${i + 1} from ${input.sourceVideoPath} (${safeStart}s - ${safeEnd}s) -> ${rawClipPath}`);
-      ffmpegCore.cutSegment(input.sourceVideoPath, safeStart, safeDuration, rawClipPath);
+      await ffmpegCore.cutSegment(input.sourceVideoPath, safeStart, safeDuration, rawClipPath);
 
       dbRepo.saveGeneratedClip({
         id: clipId,

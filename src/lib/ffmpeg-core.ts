@@ -356,10 +356,16 @@ export const ffmpegCore = {
       outputPath,
     ];
 
-    const res = spawnSync(FFMPEG, args, { encoding: 'utf8' });
-    if (res.status !== 0) {
-      throw new Error(`Vertical render failed: ${res.stderr}`);
-    }
+    return new Promise<void>((resolve, reject) => {
+      const child = spawn(FFMPEG, args);
+      let stderr = '';
+      child.stderr?.on('data', (d) => { stderr += d.toString(); });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`Vertical render failed (code ${code}): ${stderr.slice(-500)}`));
+      });
+    });
   },
 
   // 6. Mandatory Pre-Export Rendering Validation Engine

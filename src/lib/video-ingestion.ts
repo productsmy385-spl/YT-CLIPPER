@@ -478,10 +478,12 @@ export const videoIngestionEngine = {
         title: videoTitle,
         authorName: author,
         thumbnailUrl: thumbnail,
-        canProcess: true,
+        canProcess: false,
+        errorState: 'SOURCE_FILE_REQUIRED',
+        errorMessage: 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.',
         metadataRetrieved: true,
         videoAcquired: false,
-        availableActions: ['ACQUIRE_STREAM', 'UPLOAD_FILE'],
+        availableActions: ['UPLOAD_FILE', 'ATTACH_CREATOR_FILE'],
       };
     }
 

@@ -104,6 +104,8 @@ export async function POST(req: NextRequest) {
 
     // Resolve initial source video path
     let initialVideoPath = sourceFile;
+    let ytMeta: any = null;
+
     if (!initialVideoPath && sourceUrl) {
       const parsedYt = videoIngestionEngine.parseYouTubeUrl(sourceUrl);
       const existingFile = videoIngestionEngine.findAuthorizedSourceFile(parsedYt.videoId);
@@ -137,6 +139,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const projectId = `proj_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const sourceVideoId = `sv_${projectId}`;
+    const parsedYt = sourceUrl ? videoIngestionEngine.parseYouTubeUrl(sourceUrl) : null;
+    const projectTitle = title || ytMeta?.title || (parsedYt?.videoId ? `GTA 6 Gameplay (${parsedYt.videoId})` : 'GTA 6 Gameplay Shorts');
+    const storagePaths = getProjectStoragePaths(projectId);
+
     try {
       fs.accessSync(initialVideoPath, fs.constants.R_OK);
     } catch (permErr: any) {
@@ -149,7 +157,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Probe the input video file with ffprobe to verify duration and streams
     let probeMeta: any;
     try {
       probeMeta = ffmpegCore.probe(initialVideoPath);
@@ -173,12 +180,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const projectId = `proj_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const sourceVideoId = `sv_${projectId}`;
-    const projectTitle = title || (sourceUrl ? `GTA 6 Gameplay Shorts (${videoIngestionEngine.parseYouTubeUrl(sourceUrl).videoId || 'Stream'})` : 'GTA 6 Gameplay Shorts');
-
-    // Create strict project-isolated storage and copy source video into project workspace
-    const storagePaths = getProjectStoragePaths(projectId);
+    // Copy source to isolated project storage
     const ext = path.extname(initialVideoPath) || '.mp4';
     const projectIsolatedSourcePath = path.join(storagePaths.sourceDir, `${projectId}_${sourceVideoId}_source${ext}`);
 
@@ -196,11 +198,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Compute cryptographic SHA-256 checksum on the isolated project source file
     const sourceChecksum = computeFileChecksum(projectIsolatedSourcePath);
-    console.log(`[ProjectsAPI] Project ${projectId} source checksum: ${sourceChecksum}`);
 
-    // 1. Create project in database with isolated source video, checksum, and IDs
     dbRepo.createProject({
       id: projectId,
       userId: 'usr_creator_01',
@@ -211,7 +210,6 @@ export async function POST(req: NextRequest) {
       sourceChecksum,
     });
 
-    // 2. Save source video record
     dbRepo.saveSourceVideo({
       id: sourceVideoId,
       projectId,

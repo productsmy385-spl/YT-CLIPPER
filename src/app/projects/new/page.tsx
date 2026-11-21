@@ -442,11 +442,7 @@ export default function CreateShortsPage() {
         setSubmitError('Please enter a YouTube video or stream link.');
         return;
       }
-      resolvedSourceFile = uploadedData?.filePath || ytMeta?.filePath;
-      if (!resolvedSourceFile) {
-        setSubmitError('Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.');
-        return;
-      }
+      resolvedSourceFile = uploadedData?.filePath || ytMeta?.filePath || undefined;
     }
 
     // Immediately show responsive loading state

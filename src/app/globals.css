@@ -1,0 +1,161 @@
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* LIGHT MODE (Clean White / Slate Surface) */
+  :root {
+    --background: #f8fafc;
+    --foreground: #172033;
+    --card: #ffffff;
+    --card-foreground: #172033;
+    --border: #e2e8f0;
+    --input: #ffffff;
+    --ring: #ff8882;
+    --muted: #f1f5f9;
+    --muted-foreground: #64748b;
+    --accent: #ff8882;
+    --accent-foreground: #194350;
+    --primary: #ff8882;
+    --primary-foreground: #194350;
+    --secondary: #9dbeb8;
+    --secondary-foreground: #0c1b21;
+    --destructive: #ef4444;
+    --success: #15803d;
+    --warning: #f59e0b;
+    --info: #0284c7;
+
+    /* Sidebar tokens */
+    --sidebar: #ffffff;
+    --sidebar-foreground: #172033;
+    --sidebar-accent: #fff5f4;
+    --sidebar-border: #e2e8f0;
+
+    --text-2xs: 0.6875rem;
+  }
+
+  /* DARK MODE (.dark class) */
+  .dark {
+    --background: #0b1a20;
+    --foreground: #f4f8f8;
+    --card: #122d36;
+    --card-foreground: #f4f8f8;
+    --border: #1d4551;
+    --input: #163641;
+    --ring: #ff8882;
+    --muted: #15333d;
+    --muted-foreground: #9dbeb8;
+    --accent: #ff8882;
+    --accent-foreground: #194350;
+    --primary: #ff8882;
+    --primary-foreground: #194350;
+    --secondary: #9dbeb8;
+    --secondary-foreground: #0b1a20;
+    --destructive: #ef4444;
+    --success: #9dbeb8;
+    --warning: #ffc2b4;
+    --info: #9dbeb8;
+
+    /* Sidebar tokens */
+    --sidebar: #0e2229;
+    --sidebar-foreground: #9dbeb8;
+    --sidebar-accent: #15343f;
+    --sidebar-border: #1d4551;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    min-height: 100vh;
+    font-family: 'Sora', system-ui, sans-serif;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  .dark body {
+    background-color: var(--background);
+    background-image: 
+      radial-gradient(circle at 12% 15%, rgba(255, 136, 130, 0.05) 0%, transparent 40%),
+      radial-gradient(circle at 88% 20%, rgba(157, 190, 184, 0.06) 0%, transparent 45%),
+      radial-gradient(circle at 50% 85%, rgba(25, 67, 80, 0.25) 0%, transparent 50%);
+    background-attachment: fixed;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Sora', system-ui, sans-serif;
+    letter-spacing: -0.02em;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: var(--background);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #ff8882;
+}
+
+/* Custom Palette Gradient Classes */
+.vice-gradient-text {
+  background: linear-gradient(135deg, #ff8882 0%, #ffc2b4 50%, #9dbeb8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.vice-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.vice-card:hover {
+  border-color: rgba(255, 136, 130, 0.5);
+  box-shadow: 0 4px 16px -2px rgba(255, 136, 130, 0.12);
+}
+
+.dark .vice-card {
+  background: rgba(18, 45, 54, 0.85);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(157, 190, 184, 0.16);
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.4);
+}
+
+.dark .vice-card:hover {
+  border-color: rgba(255, 136, 130, 0.45);
+  box-shadow: 0 8px 30px 0 rgba(255, 136, 130, 0.12);
+}
+
+/* 4-Color Palette Gradients */
+.gradient-primary {
+  background: linear-gradient(135deg, #194350 0%, #2a6373 100%);
+}
+.gradient-pink {
+  background: linear-gradient(135deg, #ff8882 0%, #f06a64 100%);
+}
+.gradient-sunset {
+  background: linear-gradient(135deg, #ff8882 0%, #ffc2b4 100%);
+}
+.gradient-ocean {
+  background: linear-gradient(135deg, #9dbeb8 0%, #194350 100%);
+}
+.gradient-success {
+  background: linear-gradient(135deg, #9dbeb8 0%, #2f6962 100%);
+}
+.gradient-warning {
+  background: linear-gradient(135deg, #ffc2b4 0%, #ff8882 100%);
+}

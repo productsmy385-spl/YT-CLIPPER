@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+storage/projects/*
+storage/clips/*
+storage/exports/*
+storage/uploads/*
+storage/authorized_sources/*
+storage/avatars/*
+storage/*.db
+storage/*.db-journal
+storage/*.db-wal
+storage/*.db-shm
+.railway

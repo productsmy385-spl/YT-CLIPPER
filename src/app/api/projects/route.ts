@@ -6,6 +6,7 @@ import { videoIngestionEngine, computeFileChecksum } from '@/lib/video-ingestion
 import { mediaManager } from '@/lib/media-manager';
 import { getProjectStoragePaths } from '@/lib/app-paths';
 import { ffmpegCore } from '@/lib/ffmpeg-core';
+import { sourceAcquisitionEngine } from '@/lib/source-acquisition';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -111,21 +112,28 @@ export async function POST(req: NextRequest) {
 
     if (!initialVideoPath && sourceUrl) {
       const parsedYt = videoIngestionEngine.parseYouTubeUrl(sourceUrl);
-      const existingFile = videoIngestionEngine.findAuthorizedSourceFile(parsedYt.videoId);
+      if (parsedYt.videoId) {
+        const acquisition = await sourceAcquisitionEngine.acquireAuthorizedSource({
+          videoId: parsedYt.videoId,
+          sourceUrl,
+          creatorName: body.creatorName,
+        });
 
-      if (existingFile && fs.existsSync(existingFile)) {
-        initialVideoPath = existingFile;
-      } else {
-        // YouTube Data API provides metadata only; actual video file must be supplied
-        return NextResponse.json(
-          {
-            error: 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.',
-            errorState: 'SOURCE_FILE_REQUIRED',
-            metadataRetrieved: true,
-            videoAcquired: false,
-          },
-          { status: 422 }
-        );
+        if (acquisition.success && acquisition.filePath && fs.existsSync(acquisition.filePath)) {
+          initialVideoPath = acquisition.filePath;
+          console.log(`[ProjectsAPI] Acquired source via ${acquisition.provider}: ${initialVideoPath}`);
+        } else {
+          return NextResponse.json(
+            {
+              error: acquisition.error || 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.',
+              errorState: 'SOURCE_FILE_REQUIRED',
+              rights: acquisition.rightsResult,
+              metadataRetrieved: true,
+              videoAcquired: false,
+            },
+            { status: 422 }
+          );
+        }
       }
     }
 

@@ -140,6 +140,8 @@ export default function CreateShortsPage() {
   const [youtubeUrl, setYoutubeUrl] = useState<string>('');
   const [checkingUrl, setCheckingUrl] = useState(false);
   const [ytMeta, setYtMeta] = useState<IngestedYouTubeMeta | null>(null);
+  const [ytRights, setYtRights] = useState<any>(null);
+  const [ytAcquisition, setYtAcquisition] = useState<any>(null);
 
   // Local file upload state
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -346,6 +348,8 @@ export default function CreateShortsPage() {
       const data = await res.json();
       if (data.sourceInfo) {
         setYtMeta(data.sourceInfo);
+        setYtRights(data.rights || null);
+        setYtAcquisition(data.acquisition || null);
         if (data.sourceInfo.canProcess && data.sourceInfo.title && !data.sourceInfo.title.toLowerCase().includes('invalid')) {
           setTitle((prev) => (prev && prev.trim().length > 0 && !prev.toLowerCase().includes('invalid') ? prev : data.sourceInfo.title));
         } else if (title.toLowerCase().includes('invalid')) {
@@ -534,7 +538,7 @@ export default function CreateShortsPage() {
     }
   };
 
-  const startAutomationWithSource = async (sourceFilePath: string) => {
+  const startAutomationWithSource = async (sourceFilePath?: string) => {
     if (isSubmittingRef.current) return;
     isSubmittingRef.current = true;
 
@@ -544,7 +548,7 @@ export default function CreateShortsPage() {
 
     setIsSubmitting(true);
     setProgressPercent(1);
-    setCurrentStage('Initiating multi-agent pipeline...');
+    setCurrentStage(sourceFilePath ? 'Initiating multi-agent pipeline...' : 'Acquiring authorized source media...');
     setCurrentStageId('1');
 
     try {
@@ -552,9 +556,10 @@ export default function CreateShortsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: title.trim() || undefined,
+          title: title.trim() || ytMeta?.title || undefined,
           sourceUrl: sourceMode === 'youtube' && youtubeUrl.trim() ? youtubeUrl.trim() : undefined,
           sourceFile: sourceFilePath,
+          creatorName: ytMeta?.authorName || undefined,
           preset: {
             durationPreset,
             memeIntensity,
@@ -620,16 +625,14 @@ export default function CreateShortsPage() {
         setSubmitError('Please enter a YouTube video or stream link.');
         return;
       }
-      if (!uploadedData && !ytMeta?.filePath) {
-        setSubmitError('An authorized video recording must be attached before extraction can begin.');
+      if (!uploadedData && !ytMeta?.filePath && !ytAcquisition?.isAvailable) {
+        setSubmitError(ytAcquisition?.reason || 'An authorized video recording must be attached before extraction can begin.');
         return;
       }
       resolvedSourceFile = uploadedData?.filePath || ytMeta?.filePath;
     }
 
-    if (resolvedSourceFile) {
-      startAutomationWithSource(resolvedSourceFile);
-    }
+    startAutomationWithSource(resolvedSourceFile);
   };
 
   const handleCancelJob = async () => {
@@ -1034,9 +1037,52 @@ export default function CreateShortsPage() {
                     </div>
                   </div>
 
+                  {/* Rights Status Badge & Summary */}
+                  {ytRights && (
+                    <div className="p-2.5 rounded-lg border border-border text-xs flex items-center justify-between gap-2 bg-muted/40">
+                      <div className="flex items-center gap-2">
+                        {ytRights.status === 'VERIFIED' ? (
+                          <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0" />
+                        ) : ytRights.status === 'CREATIVE_COMMONS' ? (
+                          <ShieldCheck className="w-4 h-4 text-blue-500 shrink-0" />
+                        ) : (
+                          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+                        )}
+                        <div>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-bold text-[11px] text-foreground">Rights Assessment:</span>
+                            <span
+                              className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded border ${
+                                ytRights.status === 'VERIFIED'
+                                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
+                                  : ytRights.status === 'CREATIVE_COMMONS'
+                                  ? 'bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30'
+                                  : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30'
+                              }`}
+                            >
+                              {ytRights.status === 'VERIFIED'
+                                ? 'CREATOR AUTHORIZATION VERIFIED'
+                                : ytRights.status === 'CREATIVE_COMMONS'
+                                ? 'CREATIVE COMMONS (CC BY)'
+                                : 'STANDARD YOUTUBE LICENSE (UNREGISTERED)'}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            {ytRights.reason || (ytRights.isAllowed ? 'Usage permitted under verified rights policy' : 'Standard YouTube rights require creator upload or partner agreement')}
+                          </p>
+                        </div>
+                      </div>
+                      {ytRights.attributionText && (
+                        <span className="hidden sm:inline text-[9px] font-mono px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border shrink-0">
+                          CC BY Attributed
+                        </span>
+                      )}
+                    </div>
+                  )}
+
                   {/* ================= SOURCE ACQUISITION & ATTACHMENT CARD ================= */}
                   <div className="pt-2 border-t border-border space-y-2.5">
-                    {/* STATE 1: Verified recording already attached */}
+                    {/* CASE 1: Verified recording already attached */}
                     {uploadedData ? (
                       <div className="p-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
                         <div className="flex items-start gap-2.5">
@@ -1077,7 +1123,7 @@ export default function CreateShortsPage() {
                         </div>
                       </div>
                     ) : duplicateConfirmation ? (
-                      /* STATE 2: Duplicate recording detected across projects - Confirmation Gate */
+                      /* CASE 2: Duplicate recording detected across projects - Confirmation Gate */
                       <div className="p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/10 space-y-2.5 text-xs">
                         <div className="flex items-start gap-2.5">
                           <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
@@ -1118,39 +1164,44 @@ export default function CreateShortsPage() {
                           </button>
                         </div>
                       </div>
-                    ) : (
-                      /* STATE 3: Clear, intuitive Upload Dropzone (Replaces old warning banner) */
-                      <div className="space-y-2.5">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
+                    ) : ytAcquisition?.isAvailable ? (
+                      /* CASE 3: Authorized Source Acquisition Available (URL-Only Workflow!) */
+                      <div className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 space-y-3 text-xs">
+                        <div className="flex items-start gap-2.5">
+                          <Zap className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
                           <div>
-                            <span className="font-bold text-foreground flex items-center gap-1.5">
-                              <FileVideo className="w-4 h-4 text-primary" />
-                              Attach Authorized Original Recording
-                            </span>
-                            <span className="text-[11px] text-muted-foreground block mt-0.5">
-                              YouTube Data API provides metadata only. Upload your authentic recording (.mp4, .mov) corresponding to this video.
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="font-extrabold text-foreground text-sm">
+                                Authorized Media Stream Ready
+                              </span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                                {ytAcquisition.providerName || 'Direct Acquisition'}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+                              {ytAcquisition.reason || 'Authorized original media can be ingested directly without requiring a manual file upload.'}
+                            </p>
                           </div>
-                          <span className="text-[10px] font-semibold text-muted-foreground shrink-0 self-start sm:self-auto">
-                            MP4 / MOV (Up to 4K / 60fps)
-                          </span>
                         </div>
 
-                        {/* Interactive Drag-and-Drop Area */}
-                        <div
-                          onDragOver={(e) => {
-                            e.preventDefault();
-                            setIsDragging(true);
-                          }}
-                          onDragLeave={() => setIsDragging(false)}
-                          onDrop={handleFileDrop}
-                          onClick={() => fileInputRef.current?.click()}
-                          className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all ${
-                            isDragging
-                              ? 'border-primary bg-primary/10 scale-[1.005]'
-                              : 'border-border hover:border-primary/50 bg-card hover:bg-muted/30'
-                          }`}
-                        >
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => startAutomationWithSource(undefined)}
+                            disabled={isSubmitting}
+                            className="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-sm transition-colors flex items-center justify-center gap-2"
+                          >
+                            <Play className="w-3.5 h-3.5 fill-current" />
+                            <span>Acquire Media & Start AI Processing</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="px-3 py-2 rounded-lg border border-border bg-card hover:bg-muted text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors flex items-center justify-center gap-1.5"
+                          >
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>Or Upload Custom File</span>
+                          </button>
                           <input
                             ref={fileInputRef}
                             type="file"
@@ -1158,79 +1209,133 @@ export default function CreateShortsPage() {
                             onChange={handleFileInputChange}
                             className="hidden"
                           />
-                          <Upload className="w-6 h-6 mx-auto text-primary mb-1.5" />
-                          <p className="text-xs font-bold text-foreground">
-                            Drag & drop recording file here or <span className="text-primary underline">browse</span>
-                          </p>
-                          <p className="text-[11px] text-muted-foreground mt-0.5">
-                            Desktop & mobile supported • Lossless frame & audio verification via FFprobe
+                        </div>
+                      </div>
+                    ) : (
+                      /* CASE 4: Direct Acquisition Not Available -> Transparent Explanation + Dropzone */
+                      <div className="space-y-3">
+                        <div className="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 space-y-1 text-xs">
+                          <div className="flex items-center gap-2 font-bold text-amber-800 dark:text-amber-300">
+                            <AlertCircle className="w-4 h-4 shrink-0" />
+                            <span>Direct Video Acquisition Unavailable</span>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground leading-relaxed">
+                            {ytAcquisition?.reason || 'YouTube Data API retrieves metadata only. YouTube terms restrict downloading 3rd-party audiovisual media. Upload the original gameplay recording below to proceed with AI highlight detection.'}
                           </p>
                         </div>
 
-                        {/* Upload Progress Bar & Bytes Indicator */}
-                        {uploading && (
-                          <div className="space-y-1.5 p-3 rounded-xl border border-primary/30 bg-primary/5 text-xs animate-fade-in">
-                            <div className="flex justify-between items-center text-muted-foreground font-semibold">
-                              <span className="flex items-center gap-1.5 text-foreground">
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary" />
-                                Uploading {selectedFile?.name}...
+                        <div className="space-y-2.5">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
+                            <div>
+                              <span className="font-bold text-foreground flex items-center gap-1.5">
+                                <FileVideo className="w-4 h-4 text-primary" />
+                                Attach Authorized Original Recording
                               </span>
-                              <span className="font-mono font-bold text-primary">{uploadProgress}%</span>
-                            </div>
-                            <div className="w-full h-2 bg-muted rounded-full overflow-hidden border border-border">
-                              <div
-                                className="h-full bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] transition-all duration-200"
-                                style={{ width: `${Math.max(uploadProgress, 5)}%` }}
-                              />
-                            </div>
-                            <div className="flex justify-between items-center text-[10px] text-muted-foreground">
-                              <span>
-                                {uploadBytes ? `${formatBytes(uploadBytes.loaded)} of ${formatBytes(uploadBytes.total)}` : 'Verifying video stream...'}
+                              <span className="text-[11px] text-muted-foreground block mt-0.5">
+                                Upload your authentic recording (.mp4, .mov) corresponding to this video.
                               </span>
-                              <button
-                                type="button"
-                                onClick={cancelUpload}
-                                className="text-red-500 hover:underline font-bold"
-                              >
-                                Cancel Upload
-                              </button>
                             </div>
-                          </div>
-                        )}
-
-                        {/* Upload Error Banner with Retry */}
-                        {uploadError && (
-                          <div className="p-2.5 rounded-lg border border-red-500/30 bg-red-500/10 flex items-center justify-between text-xs text-red-600 dark:text-red-400">
-                            <div className="flex items-center gap-2">
-                              <AlertCircle className="w-4 h-4 shrink-0" />
-                              <span>{uploadError}</span>
-                            </div>
-                            {selectedFile && (
-                              <button
-                                type="button"
-                                onClick={() => uploadFileToServer(selectedFile)}
-                                className="px-2.5 py-1 rounded border border-red-500/40 bg-card hover:bg-muted text-[11px] font-bold text-foreground"
-                              >
-                                Retry Upload
-                              </button>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Auto-Start AI Pipeline Toggle */}
-                        <div className="pt-1 flex items-center gap-2 text-xs">
-                          <label className="flex items-center gap-2 cursor-pointer select-none text-muted-foreground hover:text-foreground">
-                            <input
-                              type="checkbox"
-                              checked={autoStartOnUpload}
-                              onChange={(e) => setAutoStartOnUpload(e.target.checked)}
-                              className="rounded border-border text-primary focus:ring-primary w-3.5 h-3.5"
-                            />
-                            <span className="flex items-center gap-1 font-semibold text-[11px]">
-                              <Zap className="w-3.5 h-3.5 text-primary" />
-                              Automatically start AI Shorts extraction upon successful upload
+                            <span className="text-[10px] font-semibold text-muted-foreground shrink-0 self-start sm:self-auto">
+                              MP4 / MOV (Up to 4K / 60fps)
                             </span>
-                          </label>
+                          </div>
+
+                          {/* Interactive Drag-and-Drop Area */}
+                          <div
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              setIsDragging(true);
+                            }}
+                            onDragLeave={() => setIsDragging(false)}
+                            onDrop={handleFileDrop}
+                            onClick={() => fileInputRef.current?.click()}
+                            className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all ${
+                              isDragging
+                                ? 'border-primary bg-primary/10 scale-[1.005]'
+                                : 'border-border hover:border-primary/50 bg-card hover:bg-muted/30'
+                            }`}
+                          >
+                            <input
+                              ref={fileInputRef}
+                              type="file"
+                              accept="video/mp4,video/quicktime,video/webm,video/x-matroska"
+                              onChange={handleFileInputChange}
+                              className="hidden"
+                            />
+                            <Upload className="w-6 h-6 mx-auto text-primary mb-1.5" />
+                            <p className="text-xs font-bold text-foreground">
+                              Drag & drop recording file here or <span className="text-primary underline">browse</span>
+                            </p>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">
+                              Desktop & mobile supported • Lossless frame & audio verification via FFprobe
+                            </p>
+                          </div>
+
+                          {/* Upload Progress Bar & Bytes Indicator */}
+                          {uploading && (
+                            <div className="space-y-1.5 p-3 rounded-xl border border-primary/30 bg-primary/5 text-xs animate-fade-in">
+                              <div className="flex justify-between items-center text-muted-foreground font-semibold">
+                                <span className="flex items-center gap-1.5 text-foreground">
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-primary" />
+                                  Uploading {selectedFile?.name}...
+                                </span>
+                                <span className="font-mono font-bold text-primary">{uploadProgress}%</span>
+                              </div>
+                              <div className="w-full h-2 bg-muted rounded-full overflow-hidden border border-border">
+                                <div
+                                  className="h-full bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] transition-all duration-200"
+                                  style={{ width: `${Math.max(uploadProgress, 5)}%` }}
+                                />
+                              </div>
+                              <div className="flex justify-between items-center text-[10px] text-muted-foreground">
+                                <span>
+                                  {uploadBytes ? `${formatBytes(uploadBytes.loaded)} of ${formatBytes(uploadBytes.total)}` : 'Verifying video stream...'}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={cancelUpload}
+                                  className="text-red-500 hover:underline font-bold"
+                                >
+                                  Cancel Upload
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Upload Error Banner with Retry */}
+                          {uploadError && (
+                            <div className="p-2.5 rounded-lg border border-red-500/30 bg-red-500/10 flex items-center justify-between text-xs text-red-600 dark:text-red-400">
+                              <div className="flex items-center gap-2">
+                                <AlertCircle className="w-4 h-4 shrink-0" />
+                                <span>{uploadError}</span>
+                              </div>
+                              {selectedFile && (
+                                <button
+                                  type="button"
+                                  onClick={() => uploadFileToServer(selectedFile)}
+                                  className="px-2.5 py-1 rounded border border-red-500/40 bg-card hover:bg-muted text-[11px] font-bold text-foreground"
+                                >
+                                  Retry Upload
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Auto-Start AI Pipeline Toggle */}
+                          <div className="pt-1 flex items-center gap-2 text-xs">
+                            <label className="flex items-center gap-2 cursor-pointer select-none text-muted-foreground hover:text-foreground">
+                              <input
+                                type="checkbox"
+                                checked={autoStartOnUpload}
+                                onChange={(e) => setAutoStartOnUpload(e.target.checked)}
+                                className="rounded border-border text-primary focus:ring-primary w-3.5 h-3.5"
+                              />
+                              <span className="flex items-center gap-1 font-semibold text-[11px]">
+                                <Zap className="w-3.5 h-3.5 text-primary" />
+                                Automatically start AI Shorts extraction upon successful upload
+                              </span>
+                            </label>
+                          </div>
                         </div>
                       </div>
                     )}

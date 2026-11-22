@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { dbRepo } from '@/db/repository';
+import { dbRepo } from '../../db/repository.ts';
 
 export const YOUTUBE_SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',

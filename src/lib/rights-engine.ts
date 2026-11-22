@@ -18,6 +18,10 @@ export interface RightsValidationResult {
   reason: string;
   attributionRequired: boolean;
   attributionText?: string;
+  derivativeUsageAllowed?: boolean;
+  commercialUsageAllowed?: boolean;
+  mediaAcquisitionMethod?: 'authorized_upload' | 'licensed_feed' | 'blocked';
+  evidenceVerified?: boolean;
   permissionDetails?: {
     permissionId: string;
     creatorId: string;
@@ -136,6 +140,10 @@ export const rightsEngine = {
           creatorName: permissionRecord.creator_name,
           status: 'EXPIRED',
           isAllowed: false,
+          derivativeUsageAllowed: false,
+          commercialUsageAllowed: false,
+          mediaAcquisitionMethod: 'blocked',
+          evidenceVerified: false,
           licenseType: 'custom_partner',
           reason: `Creator authorization expired on ${permissionRecord.expiry_date}. Please renew the agreement before processing new content.`,
           attributionRequired: false,
@@ -161,6 +169,10 @@ export const rightsEngine = {
           creatorName: permissionRecord.creator_name,
           status: 'VERIFIED',
           isAllowed: true,
+          derivativeUsageAllowed: true,
+          commercialUsageAllowed: Boolean(permissionRecord.commercial_usage_allowed),
+          mediaAcquisitionMethod: (permissionRecord.media_access_method as any) || 'authorized_upload',
+          evidenceVerified: true,
           licenseType: 'custom_partner',
           reason: `Documented creator authorization verified for ${permissionRecord.creator_name} (Usage: ${permissionRecord.allowed_usage}).`,
           attributionRequired: false,
@@ -199,6 +211,10 @@ export const rightsEngine = {
           creatorName: permissionRecord.creator_name,
           status: 'CREATIVE_COMMONS',
           isAllowed: true,
+          derivativeUsageAllowed: true,
+          commercialUsageAllowed: Boolean(permissionRecord.commercial_usage_allowed),
+          mediaAcquisitionMethod: (permissionRecord.media_access_method as any) || 'licensed_feed',
+          evidenceVerified: true,
           licenseType: 'creative_commons',
           reason: `Source content is from a verified Creative Commons (CC BY) creator or open archive. Derivative shorts and distribution are permitted with mandatory attribution.`,
           attributionRequired: true,
@@ -236,6 +252,10 @@ export const rightsEngine = {
           creatorName: permissionRecord.creator_name,
           status: 'PENDING',
           isAllowed: false,
+          derivativeUsageAllowed: false,
+          commercialUsageAllowed: false,
+          mediaAcquisitionMethod: 'authorized_upload',
+          evidenceVerified: false,
           licenseType: 'custom_partner',
           reason: `Creator authorization request for ${permissionRecord.creator_name} is currently pending administrative review.`,
           attributionRequired: false,
@@ -261,6 +281,10 @@ export const rightsEngine = {
           creatorName: permissionRecord.creator_name,
           status: 'REJECTED',
           isAllowed: false,
+          derivativeUsageAllowed: false,
+          commercialUsageAllowed: false,
+          mediaAcquisitionMethod: 'blocked',
+          evidenceVerified: false,
           licenseType: 'custom_partner',
           reason: `Creator declined authorization for media extraction and republishing.`,
           attributionRequired: false,
@@ -308,13 +332,18 @@ export const rightsEngine = {
         attributionText,
       });
 
+      // Stricter CC validation: public CC label on YouTube alone is not sufficient to guarantee clean in-game audio/music rights
       const result: RightsValidationResult = {
         videoId,
         creatorName,
         status: 'CREATIVE_COMMONS',
-        isAllowed: true,
+        isAllowed: false, // requires authorized master recording or documented partner evidence
+        derivativeUsageAllowed: false,
+        commercialUsageAllowed: false,
+        mediaAcquisitionMethod: 'authorized_upload',
+        evidenceVerified: false,
         licenseType: 'creative_commons',
-        reason: 'Creative Commons Attribution (CC BY) license verified. Processing permitted with mandatory attribution.',
+        reason: 'Creative Commons label detected on YouTube. However, a CC label alone does not verify underlying asset clearance (in-game radio, third-party music). Master recording upload or verified creator evidence required.',
         attributionRequired: true,
         attributionText,
       };
@@ -324,7 +353,7 @@ export const rightsEngine = {
         projectId,
         videoId,
         status: 'CREATIVE_COMMONS',
-        isAllowed: true,
+        isAllowed: false,
         reason: result.reason,
         licenseType: 'creative_commons',
       });
@@ -341,6 +370,10 @@ export const rightsEngine = {
       creatorName,
       status: 'UNKNOWN',
       isAllowed: false,
+      derivativeUsageAllowed: false,
+      commercialUsageAllowed: false,
+      mediaAcquisitionMethod: 'authorized_upload',
+      evidenceVerified: false,
       licenseType: ytLic.licenseType,
       reason,
       attributionRequired: false,

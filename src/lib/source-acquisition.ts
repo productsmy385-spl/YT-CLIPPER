@@ -19,6 +19,16 @@ export interface AcquisitionResult {
   error?: string;
 }
 
+export interface AcquisitionAvailability {
+  isAvailable: boolean;
+  providerName?: string;
+  providerType: AcquisitionResult['provider'];
+  rights: RightsValidationResult;
+  reason: string;
+  canAcquireDirectly: boolean;
+  availableActions: Array<'START_PIPELINE' | 'ACQUIRE_MEDIA' | 'UPLOAD_FILE' | 'REGISTER_CREATOR'>;
+}
+
 export interface MediaAcquisitionProvider {
   name: string;
   canHandle(rights: RightsValidationResult, videoId: string, url?: string): boolean;
@@ -96,7 +106,77 @@ class CreativeCommonsProvider implements MediaAcquisitionProvider {
 }
 
 /**
- * Provider 3: Creator Uploaded Media Provider
+ * Provider 3: Creator Partner Feed & Connected Storage Integration
+ */
+class CreatorPartnerFeedProvider implements MediaAcquisitionProvider {
+  name = 'Creator Partner Feed & Storage';
+
+  canHandle(rights: RightsValidationResult, videoId: string, url?: string): boolean {
+    return rights.status === 'VERIFIED' && rights.isAllowed;
+  }
+
+  async acquire(params: {
+    videoId: string;
+    url?: string;
+    rights: RightsValidationResult;
+    targetDir: string;
+    targetFileName?: string;
+  }) {
+    const existing = videoIngestionEngine.findAuthorizedSourceFile(params.videoId);
+    if (existing && fs.existsSync(existing)) {
+      return { filePath: existing, provider: 'partner_feed' as const };
+    }
+
+    const partnerCandidates = [
+      path.resolve(AUTHORIZED_SOURCES_DIR, `${params.videoId}.mp4`),
+      path.resolve(AUTHORIZED_SOURCES_DIR, `${params.videoId}.mov`),
+      path.resolve(AUTHORIZED_SOURCES_DIR, `${params.videoId}.mkv`),
+    ];
+    for (const pf of partnerCandidates) {
+      if (fs.existsSync(pf) && fs.statSync(pf).size > 100000) {
+        return { filePath: pf, provider: 'partner_feed' as const };
+      }
+    }
+    return null;
+  }
+}
+
+/**
+ * Provider 4: Direct Authorized Media URL Provider
+ */
+class DirectAuthorizedUrlProvider implements MediaAcquisitionProvider {
+  name = 'Direct Authorized Media URL';
+
+  canHandle(rights: RightsValidationResult, videoId: string, url?: string): boolean {
+    if (!url) return false;
+    return url.match(/\.(mp4|mov|webm|mkv)(\?|$)/i) !== null && (rights.isAllowed || rights.status === 'VERIFIED');
+  }
+
+  async acquire(params: {
+    videoId: string;
+    url?: string;
+    rights: RightsValidationResult;
+    targetDir: string;
+    targetFileName?: string;
+  }) {
+    if (!params.url) return null;
+    const dest = path.join(params.targetDir, params.targetFileName || `${params.videoId}_direct.mp4`);
+    try {
+      const res = await fetch(params.url, { signal: AbortSignal.timeout(60000) });
+      if (res.ok) {
+        const buffer = await res.arrayBuffer();
+        fs.writeFileSync(dest, Buffer.from(buffer));
+        return { filePath: dest, provider: 'licensed_repository' as const };
+      }
+    } catch (err: any) {
+      console.warn('[DirectAuthorizedUrlProvider] Fetch error:', err.message);
+    }
+    return null;
+  }
+}
+
+/**
+ * Provider 5: Creator Uploaded Media Provider
  * Matches user's uploaded master recording
  */
 class CreatorUploadProvider implements MediaAcquisitionProvider {
@@ -124,9 +204,78 @@ class CreatorUploadProvider implements MediaAcquisitionProvider {
 export const sourceAcquisitionEngine = {
   providers: [
     new LicensedRepositoryProvider(),
+    new CreatorPartnerFeedProvider(),
+    new DirectAuthorizedUrlProvider(),
     new CreativeCommonsProvider(),
     new CreatorUploadProvider(),
   ],
+
+  /**
+   * Pre-check availability of authorized media acquisition for a given source video
+   */
+  async checkAcquisitionAvailability(params: {
+    videoId: string;
+    sourceUrl?: string;
+    channelId?: string;
+    creatorName?: string;
+    rights?: RightsValidationResult;
+  }): Promise<AcquisitionAvailability> {
+    const { videoId, sourceUrl, channelId, creatorName } = params;
+    const rights = params.rights || (await rightsEngine.checkSourceRights({ videoId, sourceUrl, channelId, creatorName }));
+
+    // Check if an authorized source file is already present on disk
+    const existing = videoIngestionEngine.findAuthorizedSourceFile(videoId);
+    if (existing && fs.existsSync(existing)) {
+      return {
+        isAvailable: true,
+        providerName: 'Licensed Media Repository',
+        providerType: 'licensed_repository',
+        rights,
+        reason: 'Authorized recording found in licensed media repository.',
+        canAcquireDirectly: true,
+        availableActions: ['START_PIPELINE', 'ACQUIRE_MEDIA'],
+      };
+    }
+
+    // Check creator permission status
+    if (rights.status === 'VERIFIED' && rights.isAllowed) {
+      return {
+        isAvailable: true,
+        providerName: 'Creator Partner Feed & Storage',
+        providerType: 'partner_feed',
+        rights,
+        reason: `Documented creator authorization on file for ${rights.creatorName || 'creator'}. Source media acquisition is authorized.`,
+        canAcquireDirectly: true,
+        availableActions: ['START_PIPELINE', 'ACQUIRE_MEDIA'],
+      };
+    }
+
+    if (rights.status === 'CREATIVE_COMMONS' && rights.isAllowed) {
+      return {
+        isAvailable: true,
+        providerName: 'Creative Commons Stream Acquirer',
+        providerType: 'creative_commons_stream',
+        rights,
+        reason: 'Verified Creative Commons repository with cleared derivative rights. Automated stream remuxing available.',
+        canAcquireDirectly: true,
+        availableActions: ['START_PIPELINE', 'ACQUIRE_MEDIA'],
+      };
+    }
+
+    let reason = rights.reason;
+    if (rights.status === 'UNKNOWN') {
+      reason = `Media source acquisition is not available for this URL. Under YouTube API policies, automated audiovisual downloads of public third-party videos without creator permission are restricted. Creator "${creatorName || 'Content Creator'}" has not registered authorization on file.`;
+    }
+
+    return {
+      isAvailable: false,
+      providerType: 'none',
+      rights,
+      reason,
+      canAcquireDirectly: false,
+      availableActions: ['UPLOAD_FILE', 'REGISTER_CREATOR'],
+    };
+  },
 
   /**
    * Complete modular source resolution and acquisition

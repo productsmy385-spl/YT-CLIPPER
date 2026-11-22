@@ -27,18 +27,18 @@ export interface CandidateHighlight {
   endTime: number;
   duration: number;
   category:
-    | 'funny_gameplay'
-    | 'unexpected_moments'
-    | 'epic_stunts'
-    | 'police_chases'
-    | 'crazy_driving'
-    | 'character_fails'
-    | 'npc_reactions'
-    | 'streamer_reactions'
-    | 'explosions_action'
-    | 'conversations'
-    | 'cinematic_gameplay'
-    | 'plot_moments';
+  | 'funny_gameplay'
+  | 'unexpected_moments'
+  | 'epic_stunts'
+  | 'police_chases'
+  | 'crazy_driving'
+  | 'character_fails'
+  | 'npc_reactions'
+  | 'streamer_reactions'
+  | 'explosions_action'
+  | 'conversations'
+  | 'cinematic_gameplay'
+  | 'plot_moments';
   categoryLabel: string;
   entertainmentScore: number; // Viral Potential Score (1-100)
   eventDescription: string;
@@ -75,23 +75,39 @@ export const fullVideoAnalyzer = {
     duration: number
   ): Array<{ timestamp: number; volumeRms: number; energyLevel: 'low' | 'medium' | 'high' | 'peak' }> {
     const peaks: Array<{ timestamp: number; volumeRms: number; energyLevel: 'low' | 'medium' | 'high' | 'peak' }> = [];
-    const step = 2.0;
-    const sampleCount = Math.min(120, Math.max(5, Math.floor(duration / step)));
+    const step = Math.max(10.0, duration / 12);
+    const sampleCount = Math.min(20, Math.max(3, Math.floor(duration / step)));
     const sampleStep = duration / sampleCount;
 
     for (let i = 0; i < sampleCount; i++) {
-      const t = start + i * sampleStep;
-      // Synthesize harmonic energy based on time frequency
-      const baseEnergy = 0.45 + Math.sin(t * 0.35) * 0.25 + Math.cos(t * 0.8) * 0.15;
-      const rms = Math.max(0.1, Math.min(0.98, Number(baseEnergy.toFixed(3))));
+      const t = Number((start + i * sampleStep).toFixed(2));
+      let rms = 0.55;
+
+      try {
+        const res = spawnSync(
+          'ffmpeg',
+          ['-ss', String(t), '-t', '2.5', '-i', videoPath, '-vn', '-af', 'volumedetect', '-f', 'null', '-'],
+          { encoding: 'utf8', timeout: 4000 }
+        );
+        const meanMatch = (res.stderr || '').match(/mean_volume:\s*(-?[0-9.]+)\s*dB/);
+        const maxMatch = (res.stderr || '').match(/max_volume:\s*(-?[0-9.]+)\s*dB/);
+        if (meanMatch) {
+          const meanDb = parseFloat(meanMatch[1]);
+          const maxDb = maxMatch ? parseFloat(maxMatch[1]) : meanDb + 10;
+          const normalized = (meanDb + 45) / 35 + (maxDb > -3 ? 0.2 : 0);
+          rms = Math.max(0.12, Math.min(0.99, Number(normalized.toFixed(3))));
+        }
+      } catch {
+        rms = 0.5 + Math.sin(t * 0.25) * 0.2;
+      }
 
       let level: 'low' | 'medium' | 'high' | 'peak' = 'medium';
-      if (rms > 0.82) level = 'peak';
-      else if (rms > 0.65) level = 'high';
+      if (rms > 0.80) level = 'peak';
+      else if (rms > 0.62) level = 'high';
       else if (rms < 0.35) level = 'low';
 
       peaks.push({
-        timestamp: Number(t.toFixed(2)),
+        timestamp: t,
         volumeRms: rms,
         energyLevel: level,
       });
@@ -169,13 +185,34 @@ export const fullVideoAnalyzer = {
       const eventsInSegment = Math.max(1, Math.min(4, Math.floor(segDur / 30)));
 
       for (let evIdx = 0; evIdx < eventsInSegment; evIdx++) {
-        const evTime = segStart + ((evIdx + 0.5) * segDur) / eventsInSegment;
-        const catalogItem = eventCatalog[(segIdx * 3 + evIdx) % eventCatalog.length];
-        const motionScore = Number((0.72 + Math.sin(evTime * 0.4) * 0.25).toFixed(2));
-        const audioEnergy = Number((0.68 + Math.cos(evTime * 0.5) * 0.28).toFixed(2));
+        const evTime = Number((segStart + ((evIdx + 0.5) * segDur) / eventsInSegment).toFixed(2));
+        
+        // Find nearest actual audio peak from FFmpeg analysis
+        const nearestPeak = segPeaks.length > 0
+          ? segPeaks.reduce((prev, curr) => Math.abs(curr.timestamp - evTime) < Math.abs(prev.timestamp - evTime) ? curr : prev)
+          : null;
+        const audioEnergy = nearestPeak ? nearestPeak.volumeRms : 0.65;
+
+        // Visual motion intensity estimated from scene cut density
+        const cutsNearby = cutsInSeg.filter((c) => Math.abs(c - evTime) <= 15).length;
+        const motionScore = Number(Math.min(0.98, Math.max(0.55, 0.65 + cutsNearby * 0.08)).toFixed(2));
+
+        // Dynamically select event taxonomy matching real audio and visual intensity
+        let eventIdx = (segIdx * 3 + evIdx) % eventCatalog.length;
+        if (audioEnergy > 0.85 && motionScore > 0.80) {
+          eventIdx = 1; // 5-star police cruiser / explosion
+        } else if (audioEnergy > 0.80 && motionScore < 0.75) {
+          eventIdx = 6; // Streamer reaction shout
+        } else if (motionScore > 0.85) {
+          eventIdx = 0; // Supercar stunt leap
+        } else if (audioEnergy < 0.40) {
+          eventIdx = 2; // Hilarious NPC fail / silence
+        }
+
+        const catalogItem = eventCatalog[eventIdx];
 
         detectedEvents.push({
-          timestamp: Number(evTime.toFixed(2)),
+          timestamp: evTime,
           visualEvent: catalogItem.visual,
           audioEvent: catalogItem.audio,
           motionScore,
@@ -299,12 +336,12 @@ export const fullVideoAnalyzer = {
         eventsInWindow.length > 0
           ? eventsInWindow.reduce((prev, curr) => (curr.motionScore > prev.motionScore ? curr : prev))
           : {
-              timestamp: start + duration * 0.6,
-              visualEvent: 'High-speed Vice City street pursuit and getaway stunt',
-              audioEvent: 'Streamer cheering and high audio excitement',
-              motionScore: 0.85,
-              audioEnergy: 0.82,
-            };
+            timestamp: start + duration * 0.6,
+            visualEvent: 'High-speed Vice City street pursuit and getaway stunt',
+            audioEvent: 'Streamer cheering and high audio excitement',
+            motionScore: 0.85,
+            audioEnergy: 0.82,
+          };
 
       // 5-Part Story Arc Assembly
       const hookEnd = Number((start + Math.min(5.0, duration * 0.08)).toFixed(2));

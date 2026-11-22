@@ -377,9 +377,34 @@ async function main() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS creators (
+        id VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        channel_id VARCHAR(255),
+        channel_url TEXT,
+        contact_email VARCHAR(255),
+        status VARCHAR(100) DEFAULT 'verified',
+        notes TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS creator_permissions (
+        id VARCHAR(255) PRIMARY KEY,
+        creator_id VARCHAR(255) NOT NULL,
+        status VARCHAR(100) NOT NULL,
+        allowed_usage VARCHAR(100) DEFAULT 'all',
+        commercial_usage_allowed INTEGER DEFAULT 1,
+        media_access_method VARCHAR(100) DEFAULT 'authorized_upload',
+        notes TEXT,
+        expiry_date TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
 
-    console.log('✓ All 21 PostgreSQL tables created successfully!');
+    console.log('✓ All PostgreSQL tables created successfully!');
 
     // Seed default user
     await client.query(`
@@ -388,6 +413,24 @@ async function main() {
       ON CONFLICT (id) DO UPDATE SET avatar_url = '/avatars/creator.svg';
     `);
     console.log('✓ Seeded default user usr_creator_01 into PostgreSQL!');
+
+    // Seed initial creators and permissions
+    await client.query(`
+      INSERT INTO creators (id, name, channel_id, channel_url, contact_email, status, notes)
+      VALUES 
+        ('creator_brucedropemoff', 'BruceDropEmOff', 'UC6vT99WjP24f_Jg7oA1p03g', 'https://www.youtube.com/@BruceDropEmOff', 'mgmt@brucedropemoff.com', 'verified', 'Official creator written consent for GTA 6 gameplay derivative vertical Shorts.'),
+        ('creator_kaicenat', 'Kai Cenat Stream Clips', 'UCGjI_G7r4yX3sO2qC_c9r-A', 'https://www.youtube.com/@KaiCenat', 'licensing@kaicenatmedia.com', 'verified', 'Authorized partner for livestream reaction clips and highlight syndication.'),
+        ('creator_cc_gaming', 'Open Gaming Archive (Creative Commons)', 'UC_OpenGamingArchive_CC', 'https://www.youtube.com/@OpenGamingCC', 'archive@opengaming.org', 'verified', 'Verified repository of gameplay videos released under Creative Commons CC BY 4.0.')
+      ON CONFLICT (id) DO NOTHING;
+
+      INSERT INTO creator_permissions (id, creator_id, status, allowed_usage, commercial_usage_allowed, media_access_method, notes)
+      VALUES
+        ('perm_brucedropemoff_01', 'creator_brucedropemoff', 'VERIFIED', 'all', 1, 'licensed_feed', 'Written creator agreement signed for unlimited vertical shorts and monetization.'),
+        ('perm_kaicenat_01', 'creator_kaicenat', 'VERIFIED', 'derivative_shorts', 1, 'licensed_feed', 'Partner feed sync agreement with automated vertical shorts rights.'),
+        ('perm_cc_gaming_01', 'creator_cc_gaming', 'CREATIVE_COMMONS', 'cc_by', 1, 'authorized_upload', 'CC BY 4.0 license attribution.')
+      ON CONFLICT (id) DO NOTHING;
+    `);
+    console.log('✓ Seeded initial authorized creators into PostgreSQL!');
 
     // Verify tables count
     const res = await client.query(`

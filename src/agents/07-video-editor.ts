@@ -82,22 +82,80 @@ export class VideoEditingAgent extends BaseAgent<VideoEditingInput, VideoEditing
     console.log(`[VideoEditingAgent] Rendering 9:16 vertical short for ${input.clipId} (version ${editingVersion})...`);
     console.log(`[VideoEditingAgent] Layout: ${input.layoutMode || 'blurred_background'} | Source: ${input.rawClipPath}`);
 
-    // Programmatic 9:16 Vertical Composition
-    await ffmpegCore.renderVerticalShort({
-      sourceClip: input.rawClipPath,
-      outputPath: finalVideoPath,
-      duration: input.duration,
-      layoutMode: input.layoutMode || 'blurred_background',
-      cropX: input.cropX ?? 0.5,
-      zoomScale: input.zoomScale ?? 1.05,
-      memeOverlayPath: input.memeConfig?.selectedMeme?.filePath,
-      memeStart: input.memeConfig?.placementTimestamp,
-      memeDuration: input.memeConfig?.duration,
-      bgmPath: input.musicConfig?.selectedMusic?.filePath,
-      bgmVolume: input.musicConfig?.volume ?? 0.18,
-      sfxEvents: input.sfxConfig?.sfxEvents,
-      subtitleAssPath: input.subtitleConfig?.assFilePath,
-    });
+    // Modular Multi-Tier 9:16 Vertical Composition with Reliable Fallbacks
+    let renderSucceeded = false;
+    let renderTier = 'tier_1_full';
+    let lastRenderError = '';
+
+    // Tier 1: Complete Composition (crop + subtitles + bgm + sfx + meme)
+    try {
+      console.log(`[VideoEditingAgent] [Tier 1] Attempting full composition for ${input.clipId}...`);
+      await ffmpegCore.renderVerticalShort({
+        sourceClip: input.rawClipPath,
+        outputPath: finalVideoPath,
+        duration: input.duration,
+        layoutMode: input.layoutMode || 'blurred_background',
+        cropX: input.cropX ?? 0.5,
+        zoomScale: input.zoomScale ?? 1.05,
+        memeOverlayPath: input.memeConfig?.selectedMeme?.filePath,
+        memeStart: input.memeConfig?.placementTimestamp,
+        memeDuration: input.memeConfig?.duration,
+        bgmPath: input.musicConfig?.selectedMusic?.filePath,
+        bgmVolume: input.musicConfig?.volume ?? 0.18,
+        sfxEvents: input.sfxConfig?.sfxEvents,
+        subtitleAssPath: input.subtitleConfig?.assFilePath,
+      });
+      renderSucceeded = true;
+    } catch (err1: any) {
+      lastRenderError = err1.message;
+      console.warn(`[VideoEditingAgent] ⚠️ Tier 1 full composition failed for ${input.clipId}: ${err1.message}`);
+
+      // Tier 2: Fallback without subtitles (if ASS burn-in had issues)
+      try {
+        console.log(`[VideoEditingAgent] [Tier 2] Retrying without subtitle burn-in...`);
+        renderTier = 'tier_2_no_subtitles';
+        await ffmpegCore.renderVerticalShort({
+          sourceClip: input.rawClipPath,
+          outputPath: finalVideoPath,
+          duration: input.duration,
+          layoutMode: input.layoutMode || 'blurred_background',
+          cropX: input.cropX ?? 0.5,
+          zoomScale: input.zoomScale ?? 1.05,
+          memeOverlayPath: input.memeConfig?.selectedMeme?.filePath,
+          memeStart: input.memeConfig?.placementTimestamp,
+          memeDuration: input.memeConfig?.duration,
+          bgmPath: input.musicConfig?.selectedMusic?.filePath,
+          bgmVolume: input.musicConfig?.volume ?? 0.18,
+          sfxEvents: input.sfxConfig?.sfxEvents,
+          skipSubtitles: true,
+        });
+        renderSucceeded = true;
+      } catch (err2: any) {
+        lastRenderError = err2.message;
+        console.warn(`[VideoEditingAgent] ⚠️ Tier 2 failed for ${input.clipId}: ${err2.message}`);
+
+        // Tier 3: Clean Vertical Fallback (clean vertical 9:16 crop with original source audio)
+        try {
+          console.log(`[VideoEditingAgent] [Tier 3] Retrying basic vertical 9:16 Short with original audio only...`);
+          renderTier = 'tier_3_basic_vertical';
+          await ffmpegCore.renderBasicVertical({
+            sourceClip: input.rawClipPath,
+            outputPath: finalVideoPath,
+            duration: input.duration,
+            layoutMode: input.layoutMode || 'blurred_background',
+            cropX: input.cropX ?? 0.5,
+          });
+          renderSucceeded = true;
+        } catch (err3: any) {
+          lastRenderError = err3.message;
+          console.error(`[VideoEditingAgent] ❌ All rendering tiers failed for ${input.clipId}:`, err3.message);
+        }
+      }
+    }
+
+    if (!renderSucceeded) {
+      throw new Error(`Vertical render failed across all modular tiers: ${lastRenderError}`);
+    }
 
     // Mandatory Post-Render Validation Check
     const validation = ffmpegCore.validateRenderedVideo(finalVideoPath, input.duration);

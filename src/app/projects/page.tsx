@@ -222,7 +222,14 @@ function ProjectsContent() {
           {projects.map((p: any) => {
             const isCompleted = p.status === 'completed' || p.status === 'ready';
             const isCancelled = p.status === 'cancelled';
-            const isError = p.status === 'error';
+            const isError = p.status === 'error' || p.status === 'failed';
+            const cleanStageName = isError
+              ? (p.current_stage?.includes('Vertical render failed')
+                  ? 'Render Paused (FFmpeg)'
+                  : p.current_stage?.includes('checksum')
+                  ? 'Checksum Mismatch'
+                  : (p.current_stage?.length > 35 ? p.current_stage.substring(0, 35) + '...' : p.current_stage || 'Processing Failed'))
+              : p.current_stage || 'Done';
 
             return (
               <div
@@ -333,8 +340,8 @@ function ProjectsContent() {
 
                 <div className="space-y-2.5 pt-1 border-t border-border">
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>
-                      Stage: <strong className="text-foreground">{p.current_stage || 'Done'}</strong>
+                    <span className="line-clamp-1 max-w-[70%]">
+                      Stage: <strong className="text-foreground">{cleanStageName}</strong>
                     </span>
                     <span className="font-mono text-primary font-bold">{p.progress}%</span>
                   </div>

@@ -612,6 +612,7 @@ export class MasterAgentOrchestrator {
 
       return {
         projectId,
+        status: 'ready',
         totalClips: processedClips.length,
         clips: processedClips,
       };

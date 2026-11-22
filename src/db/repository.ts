@@ -1567,4 +1567,296 @@ export const dbRepo = {
 
     return { success: true, id };
   },
+
+  // --- CONTENT RIGHTS & CREATOR PERMISSIONS ---
+  listCreators(): any[] {
+    try {
+      return rawDb.prepare(`SELECT * FROM creators ORDER BY created_at DESC`).all();
+    } catch {
+      return [];
+    }
+  },
+
+  getCreatorById(id: string): any {
+    try {
+      return rawDb.prepare(`SELECT * FROM creators WHERE id = ?`).get(id);
+    } catch {
+      return null;
+    }
+  },
+
+  getCreatorByChannelId(channelId: string): any {
+    try {
+      return rawDb.prepare(`SELECT * FROM creators WHERE channel_id = ?`).get(channelId);
+    } catch {
+      return null;
+    }
+  },
+
+  saveCreator(data: {
+    id: string;
+    name: string;
+    channelId?: string;
+    channelUrl?: string;
+    contactEmail?: string;
+    status?: string;
+    notes?: string;
+  }) {
+    const now = new Date().toISOString();
+    return rawDb.prepare(`
+      INSERT INTO creators (id, name, channel_id, channel_url, contact_email, status, notes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        channel_id = excluded.channel_id,
+        channel_url = excluded.channel_url,
+        contact_email = excluded.contact_email,
+        status = excluded.status,
+        notes = excluded.notes,
+        updated_at = excluded.updated_at
+    `).run(
+      data.id,
+      data.name,
+      data.channelId || null,
+      data.channelUrl || null,
+      data.contactEmail || null,
+      data.status || 'verified',
+      data.notes || null,
+      now,
+      now
+    );
+  },
+
+  listCreatorPermissions(filters?: { status?: string; creatorId?: string }): any[] {
+    try {
+      let sql = `
+        SELECT cp.*, c.name as creator_name, c.channel_url, c.contact_email
+        FROM creator_permissions cp
+        LEFT JOIN creators c ON cp.creator_id = c.id
+        WHERE 1=1
+      `;
+      const params: any[] = [];
+      if (filters?.status && filters.status !== 'all') {
+        sql += ` AND cp.status = ?`;
+        params.push(filters.status);
+      }
+      if (filters?.creatorId) {
+        sql += ` AND cp.creator_id = ?`;
+        params.push(filters.creatorId);
+      }
+      sql += ` ORDER BY cp.created_at DESC`;
+      return rawDb.prepare(sql).all(...params);
+    } catch {
+      return [];
+    }
+  },
+
+  getPermissionByChannel(channelId: string): any {
+    try {
+      return rawDb.prepare(`
+        SELECT cp.*, c.name as creator_name, c.channel_url
+        FROM creator_permissions cp
+        LEFT JOIN creators c ON cp.creator_id = c.id
+        WHERE cp.channel_id = ? OR c.channel_id = ?
+        ORDER BY cp.created_at DESC LIMIT 1
+      `).get(channelId, channelId);
+    } catch {
+      return null;
+    }
+  },
+
+  saveCreatorPermission(data: {
+    id: string;
+    creatorId: string;
+    channelId?: string;
+    status: string; // VERIFIED, CREATIVE_COMMONS, PENDING, REJECTED, EXPIRED, UNKNOWN
+    startDate?: string;
+    expiryDate?: string;
+    allowedUsage?: string;
+    commercialUsageAllowed?: boolean;
+    editingAllowed?: boolean;
+    republishingAllowed?: boolean;
+    mediaAccessMethod?: string;
+    notes?: string;
+    verifiedBy?: string;
+  }) {
+    const now = new Date().toISOString();
+    return rawDb.prepare(`
+      INSERT INTO creator_permissions (
+        id, creator_id, channel_id, status, start_date, expiry_date,
+        allowed_usage, commercial_usage_allowed, editing_allowed, republishing_allowed,
+        media_access_method, notes, verified_by, verified_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        channel_id = excluded.channel_id,
+        start_date = excluded.start_date,
+        expiry_date = excluded.expiry_date,
+        allowed_usage = excluded.allowed_usage,
+        commercial_usage_allowed = excluded.commercial_usage_allowed,
+        editing_allowed = excluded.editing_allowed,
+        republishing_allowed = excluded.republishing_allowed,
+        media_access_method = excluded.media_access_method,
+        notes = excluded.notes,
+        verified_by = excluded.verified_by,
+        verified_at = excluded.verified_at,
+        updated_at = excluded.updated_at
+    `).run(
+      data.id,
+      data.creatorId,
+      data.channelId || null,
+      data.status,
+      data.startDate || now,
+      data.expiryDate || null,
+      data.allowedUsage || 'all',
+      data.commercialUsageAllowed ? 1 : 0,
+      data.editingAllowed ?? true ? 1 : 0,
+      data.republishingAllowed ?? true ? 1 : 0,
+      data.mediaAccessMethod || 'authorized_upload',
+      data.notes || null,
+      data.verifiedBy || 'admin',
+      now,
+      now,
+      now
+    );
+  },
+
+  saveContentLicense(data: {
+    id: string;
+    videoId: string;
+    channelId?: string;
+    licenseType: string;
+    licenseUrl?: string;
+    sourceUrl?: string;
+  }) {
+    const now = new Date().toISOString();
+    try {
+      return rawDb.prepare(`
+        INSERT OR REPLACE INTO content_licenses (id, video_id, channel_id, license_type, license_url, source_url, verified_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        data.id,
+        data.videoId,
+        data.channelId || null,
+        data.licenseType,
+        data.licenseUrl || null,
+        data.sourceUrl || null,
+        now,
+        now
+      );
+    } catch (e) {
+      console.warn('saveContentLicense note:', e);
+    }
+  },
+
+  savePermissionEvidence(data: {
+    id: string;
+    permissionId: string;
+    creatorId: string;
+    documentType: string;
+    documentUrl?: string;
+    filePath?: string;
+    notes?: string;
+    uploadedBy?: string;
+  }) {
+    const now = new Date().toISOString();
+    try {
+      return rawDb.prepare(`
+        INSERT INTO permission_evidence (id, permission_id, creator_id, document_type, document_url, file_path, notes, uploaded_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        data.id,
+        data.permissionId,
+        data.creatorId,
+        data.documentType,
+        data.documentUrl || null,
+        data.filePath || null,
+        data.notes || null,
+        data.uploadedBy || 'admin',
+        now
+      );
+    } catch (e) {
+      console.warn('savePermissionEvidence note:', e);
+    }
+  },
+
+  saveSourceRightsCheck(data: {
+    id: string;
+    projectId?: string;
+    videoId: string;
+    channelId?: string;
+    creatorId?: string;
+    status: string;
+    isAllowed: boolean;
+    reason: string;
+    licenseType: string;
+  }) {
+    const now = new Date().toISOString();
+    try {
+      return rawDb.prepare(`
+        INSERT INTO source_rights_checks (id, project_id, video_id, channel_id, creator_id, status, is_allowed, reason, license_type, checked_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        data.id,
+        data.projectId || null,
+        data.videoId,
+        data.channelId || null,
+        data.creatorId || null,
+        data.status,
+        data.isAllowed ? 1 : 0,
+        data.reason,
+        data.licenseType,
+        now
+      );
+    } catch (e) {
+      console.warn('saveSourceRightsCheck note:', e);
+    }
+  },
+
+  listSourceRightsChecks(limit = 50): any[] {
+    try {
+      return rawDb.prepare(`SELECT * FROM source_rights_checks ORDER BY checked_at DESC LIMIT ?`).all(limit);
+    } catch {
+      return [];
+    }
+  },
+
+  saveAttributionRecord(data: {
+    id: string;
+    projectId?: string;
+    videoId: string;
+    title: string;
+    creatorName: string;
+    sourceUrl: string;
+    licenseType: string;
+    attributionText: string;
+  }) {
+    const now = new Date().toISOString();
+    try {
+      return rawDb.prepare(`
+        INSERT INTO attribution_records (id, project_id, video_id, title, creator_name, source_url, license_type, attribution_text, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        data.id,
+        data.projectId || null,
+        data.videoId,
+        data.title,
+        data.creatorName,
+        data.sourceUrl,
+        data.licenseType,
+        data.attributionText,
+        now
+      );
+    } catch (e) {
+      console.warn('saveAttributionRecord note:', e);
+    }
+  },
+
+  listAttributionRecords(limit = 50): any[] {
+    try {
+      return rawDb.prepare(`SELECT * FROM attribution_records ORDER BY created_at DESC LIMIT ?`).all(limit);
+    } catch {
+      return [];
+    }
+  },
 };

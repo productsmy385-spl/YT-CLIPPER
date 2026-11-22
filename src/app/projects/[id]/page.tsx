@@ -38,9 +38,11 @@ export default function ProjectDetailsPage({ params }: { params: Promise<{ id: s
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  // Cancellation state
+  // Cancellation & Retry state
   const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [showTechDetails, setShowTechDetails] = useState(false);
 
   const fetchProject = async () => {
     try {
@@ -83,6 +85,25 @@ export default function ProjectDetailsPage({ params }: { params: Promise<{ id: s
     }
   };
 
+  const handleRetryProject = async () => {
+    setIsRetrying(true);
+    try {
+      const res = await fetch(`/api/projects/${id}/retry`, {
+        method: 'POST',
+      });
+      const json = await res.json();
+      if (json.success) {
+        fetchProject();
+      } else {
+        alert(json.error || 'Failed to retry project');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Retry request failed');
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   if (loading && !data) {
     return (
       <div className="py-24 text-center space-y-4">
@@ -108,6 +129,24 @@ export default function ProjectDetailsPage({ params }: { params: Promise<{ id: s
   const isCompleted = project.status === 'completed' || project.status === 'ready';
   const isCancelled = project.status === 'cancelled';
   const isActive = project.status === 'in_progress' || project.status === 'created';
+  const isError = project.status === 'error' || project.status === 'failed';
+
+  const rawError = project.error_message || project.current_stage || '';
+  const shortError = rawError.includes('Vertical render failed')
+    ? 'Vertical video rendering encountered an issue while processing stream filters.'
+    : rawError.includes('checksum')
+    ? 'Source recording checksum verification failed.'
+    : rawError.length > 120
+    ? rawError.substring(0, 120) + '...'
+    : rawError || 'Pipeline encountered an unexpected error.';
+  const technicalError = project.error_message || project.current_stage || 'No technical error log available.';
+
+  const renderedClips = clips.filter(
+    (c: any) => (c.status === 'rendered' || c.status === 'ready' || c.status === 'completed') && (c.edited_clip_path || c.output_path)
+  );
+  const failedClips = clips.filter(
+    (c: any) => c.status === 'failed' || c.status === 'error' || c.processing_status === 'failed'
+  );
 
   return (
     <div className="space-y-6">
@@ -144,6 +183,8 @@ export default function ProjectDetailsPage({ params }: { params: Promise<{ id: s
                     ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 border border-emerald-500/30'
                     : isCancelled
                     ? 'bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30'
+                    : isError
+                    ? 'bg-rose-500/20 text-rose-700 dark:text-rose-400 border border-rose-500/30'
                     : 'bg-primary/20 text-primary border border-primary/30 animate-pulse'
                 }`}
               >
@@ -173,8 +214,77 @@ export default function ProjectDetailsPage({ params }: { params: Promise<{ id: s
                 Start New Short
               </Link>
             )}
+            {isError && (
+              <button
+                onClick={handleRetryProject}
+                disabled={isRetrying}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRetrying ? 'animate-spin' : ''}`} />
+                {isRetrying ? 'Retrying...' : 'Retry Processing'}
+              </button>
+            )}
           </div>
         </div>
+
+        {/* Error State Banner */}
+        {isError && (
+          <div className="p-4 sm:p-5 rounded-2xl border border-rose-500/40 bg-rose-500/10 text-foreground space-y-3 animate-fade-in">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="p-2.5 rounded-xl bg-rose-500/20 text-rose-500 shrink-0 mt-0.5">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-extrabold text-foreground">Processing Failed</h3>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-rose-500/20 text-rose-600 dark:text-rose-400 uppercase">
+                      Stage {project.stage_id || '7'}: {project.current_stage || 'Video Editing'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1 max-w-2xl leading-relaxed">
+                    {shortError}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                <button
+                  onClick={handleRetryProject}
+                  disabled={isRetrying}
+                  className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRetrying ? 'animate-spin' : ''}`} />
+                  {isRetrying ? 'Retrying...' : 'Retry Processing'}
+                </button>
+                <button
+                  onClick={() => setShowTechDetails(!showTechDetails)}
+                  className="px-3 py-2 rounded-xl border border-border bg-card hover:bg-muted text-xs font-semibold text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                  {showTechDetails ? 'Hide Details' : 'View Technical Details'}
+                </button>
+              </div>
+            </div>
+
+            {showTechDetails && (
+              <div className="mt-3 p-3.5 rounded-xl bg-black/80 border border-border font-mono text-[11px] text-zinc-300 space-y-2">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-2 text-zinc-400">
+                  <span>Technical Diagnostics &amp; Stderr Log:</span>
+                  <button
+                    onClick={() => navigator.clipboard.writeText(technicalError)}
+                    className="text-[10px] text-primary hover:underline"
+                  >
+                    Copy Technical Log
+                  </button>
+                </div>
+                <pre className="whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto text-xs text-rose-400/90 font-mono">
+                  {technicalError}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Cancelled Banner */}
         {isCancelled && (
@@ -255,12 +365,12 @@ export default function ProjectDetailsPage({ params }: { params: Promise<{ id: s
         </div>
       </div>
 
-      {/* Generated Shorts Result Gallery (if available) */}
-      {clips.length > 0 && (
+      {/* Generated Shorts Result Gallery */}
+      {renderedClips.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-bold text-foreground flex items-center gap-2">
-              <Scissors className="w-4 h-4 text-primary" /> Completed Vertical Shorts ({clips.length})
+              <Scissors className="w-4 h-4 text-primary" /> Completed Vertical Shorts ({renderedClips.length})
             </h2>
             <Link href="/editor" className="text-xs font-semibold text-primary hover:underline">
               Open Full Editor &rarr;
@@ -268,7 +378,7 @@ export default function ProjectDetailsPage({ params }: { params: Promise<{ id: s
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {clips.map((clip: any) => {
+            {renderedClips.map((clip: any) => {
               const fileName = clip.output_path ? clip.output_path.split(/\\|\//).pop() : '';
               return (
                 <div key={clip.id} className="vice-card overflow-hidden flex flex-col border border-border bg-card">
@@ -305,6 +415,27 @@ export default function ProjectDetailsPage({ params }: { params: Promise<{ id: s
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* Failed Clips Banner if any render failed */}
+      {failedClips.length > 0 && (
+        <div className="p-4 rounded-xl border border-rose-500/30 bg-rose-500/5 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-bold text-rose-500 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4" /> Rendering Incomplete for {failedClips.length} Clip(s)
+            </h3>
+            <button
+              onClick={handleRetryProject}
+              disabled={isRetrying}
+              className="text-xs font-bold text-rose-500 hover:underline flex items-center gap-1"
+            >
+              <RefreshCw className={`w-3 h-3 ${isRetrying ? 'animate-spin' : ''}`} /> Retry Render
+            </button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The raw gameplay segments were successfully extracted, but vertical rendering was interrupted. Click &quot;Retry Render&quot; to resume composition with modular fallbacks.
+          </p>
         </div>
       )}
 

@@ -33,6 +33,35 @@ export interface RenderValidationResult {
   fileSizeBytes: number;
 }
 
+export function extractMeaningfulFfmpegError(stderr: string): string {
+  if (!stderr) return 'Unknown FFmpeg execution error';
+  const lines = stderr
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  const errorMatches = lines.filter((line) => {
+    const l = line.toLowerCase();
+    return (
+      l.includes('error') ||
+      l.includes('invalid') ||
+      l.includes('unable to') ||
+      l.includes('failed') ||
+      l.includes('no such') ||
+      line.startsWith('[Parsed_') ||
+      line.startsWith('[AVFilterGraph') ||
+      line.startsWith('[fc#')
+    );
+  });
+
+  if (errorMatches.length > 0) {
+    const distinct = Array.from(new Set(errorMatches));
+    return distinct.slice(-2).join(' | ');
+  }
+
+  return lines.slice(-2).join(' | ');
+}
+
 export const ffmpegCore = {
   // 1. Comprehensive probe of video and audio streams
   probe(filePath: string): VideoMetadata {
@@ -232,6 +261,8 @@ export const ffmpegCore = {
     bgmVolume?: number; // default 0.18
     sfxEvents?: Array<{ sfxPath: string; timestamp: number; volume: number }>;
     subtitleAssPath?: string;
+    skipSubtitles?: boolean;
+    skipOptionalAudio?: boolean;
   }) {
     const {
       sourceClip,
@@ -247,12 +278,17 @@ export const ffmpegCore = {
       bgmVolume = 0.18,
       sfxEvents = [],
       subtitleAssPath,
+      skipSubtitles = false,
+      skipOptionalAudio = false,
     } = params;
 
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     const sourceMeta = this.probe(sourceClip);
 
+    // Maintain accurate integer stream index: 0 is always sourceClip
     const inputs: string[] = ['-y', '-i', sourceClip];
+    let nextInputIdx = 1;
+
     const filterParts: string[] = [];
 
     // --- VIDEO PIPELINE ---
@@ -260,7 +296,6 @@ export const ffmpegCore = {
       // High-End Gaming Shorts Layout:
       // Background: Source gameplay scaled & cropped to 1080x1920 with smooth boxblur
       // Foreground: 100% full original gameplay scaled to 1080 width, centered vertically at (H-h)/2
-      // This guarantees 100% of game HUD, weapons, radar, streamer cam, and stunt action remain completely visible!
       filterParts.push(
         `[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:5[bg]`,
         `[0:v]scale=1080:-1[fg]`,
@@ -275,20 +310,29 @@ export const ffmpegCore = {
 
     // Meme Overlay (PiP at top-right or center)
     let currentV = '[v_base]';
-    if (memeOverlayPath && fs.existsSync(memeOverlayPath)) {
-      inputs.push('-i', memeOverlayPath);
-      const memeIdx = inputs.length / 2 - 1;
+    if (!skipOptionalAudio && memeOverlayPath && fs.existsSync(memeOverlayPath)) {
+      const memeIdx = nextInputIdx++;
+      const isImage = /\.(png|jpe?g|webp|bmp|gif)$/i.test(memeOverlayPath);
+      if (isImage) {
+        inputs.push('-loop', '1', '-i', memeOverlayPath);
+      } else {
+        inputs.push('-i', memeOverlayPath);
+      }
       filterParts.push(
         `[${memeIdx}:v]scale=320:320[meme_scaled]`,
-        `${currentV}[meme_scaled]overlay=W-w-30:90:enable='between(t,${memeStart},${memeStart + memeDuration})'[v_meme]`
+        `${currentV}[meme_scaled]overlay=W-w-30:90:enable='between(t,${memeStart},${memeStart + memeDuration})':eof_action=repeat[v_meme]`
       );
       currentV = '[v_meme]';
     }
 
     // Subtitles (ASS Burn-in)
-    if (subtitleAssPath && fs.existsSync(subtitleAssPath)) {
-      const escapedAss = subtitleAssPath.replace(/\\/g, '/').replace(/:/g, '\\:');
-      filterParts.push(`${currentV}ass='${escapedAss}'[v_out]`);
+    if (!skipSubtitles && subtitleAssPath && fs.existsSync(subtitleAssPath)) {
+      // Use forward-slash relative path if possible to avoid Windows colon escaping bugs in FFmpeg
+      const relPath = path.relative(process.cwd(), subtitleAssPath).split(path.sep).join('/');
+      const filterAssPath = (!relPath.startsWith('..') && !path.isAbsolute(relPath))
+        ? relPath
+        : subtitleAssPath.split(path.sep).join('/').replace(/:/g, '\\:');
+      filterParts.push(`${currentV}ass='${filterAssPath}'[v_out]`);
     } else {
       filterParts.push(`${currentV}null[v_out]`);
     }
@@ -296,48 +340,51 @@ export const ffmpegCore = {
     // --- AUDIO PIPELINE ---
     // Priority: Original Streamer Voice > Original Gameplay Audio > SFX > Background Music (ducked)
     if (sourceMeta.hasAudio) {
-      // Keep original voice & game audio as master channel at full volume (volume=1.1)
       filterParts.push(
         `[0:a]aformat=channel_layouts=stereo:sample_rates=48000,volume=1.1[master_audio]`
       );
-      const mixInputs = ['[master_audio]'];
+    } else {
+      // Source video has no audio track: provide clean 48kHz stereo silence as base channel
+      filterParts.push(
+        `aevalsrc=0:d=${duration}:s=48000:c=stereo[master_audio]`
+      );
+    }
 
+    const mixInputs = ['[master_audio]'];
+
+    if (!skipOptionalAudio) {
       // BGM with auto-ducking (low volume, smooth in/out)
       if (bgmPath && fs.existsSync(bgmPath)) {
+        const bgmIdx = nextInputIdx++;
         inputs.push('-i', bgmPath);
-        const bgmIdx = inputs.length / 2 - 1;
+        const safeFadeOut = Math.max(0, duration - 1.5);
         filterParts.push(
-          `[${bgmIdx}:a]aformat=channel_layouts=stereo:sample_rates=48000,aloop=loop=-1:size=2880000,atrim=0:${duration},volume=${bgmVolume},afade=t=in:ss=0:d=1,afade=t=out:st=${duration - 1.5}:d=1.5[bgm_ducked]`
+          `[${bgmIdx}:a]aformat=channel_layouts=stereo:sample_rates=48000,aloop=loop=-1:size=2880000,atrim=0:${duration},volume=${bgmVolume},afade=t=in:ss=0:d=1,afade=t=out:st=${safeFadeOut}:d=1.5[bgm_ducked]`
         );
         mixInputs.push('[bgm_ducked]');
       }
 
       // SFX Events placed without attenuating voice
       sfxEvents.forEach((sfx, idx) => {
-        if (fs.existsSync(sfx.sfxPath)) {
+        if (sfx.sfxPath && fs.existsSync(sfx.sfxPath)) {
+          const sfxIdx = nextInputIdx++;
           inputs.push('-i', sfx.sfxPath);
-          const sfxIdx = inputs.length / 2 - 1;
-          const delayMs = Math.round(sfx.timestamp * 1000);
+          const delayMs = Math.max(0, Math.round(sfx.timestamp * 1000));
           filterParts.push(
             `[${sfxIdx}:a]aformat=channel_layouts=stereo:sample_rates=48000,adelay=${delayMs}|${delayMs},volume=${sfx.volume}[sfx_${idx}]`
           );
           mixInputs.push(`[sfx_${idx}]`);
         }
       });
+    }
 
-      if (mixInputs.length > 1) {
-        // Use normalize=0 to guarantee original master audio is NEVER quieted down
-        filterParts.push(
-          `${mixInputs.join('')}amix=inputs=${mixInputs.length}:duration=first:normalize=0,alimiter=limit=0.95[a_out]`
-        );
-      } else {
-        filterParts.push(`[master_audio]alimiter=limit=0.95[a_out]`);
-      }
-    } else {
-      // Source has no audio: do not invent beep tones, provide clean ambient audio or throw clear warning
+    if (mixInputs.length > 1) {
+      // Use normalize=0 to guarantee original master audio is NEVER quieted down
       filterParts.push(
-        `aevalsrc=0:d=${duration}:s=48000:c=stereo[a_out]`
+        `${mixInputs.join('')}amix=inputs=${mixInputs.length}:duration=first:normalize=0,alimiter=limit=0.95[a_out]`
       );
+    } else {
+      filterParts.push(`[master_audio]alimiter=limit=0.95[a_out]`);
     }
 
     const args = [
@@ -358,13 +405,50 @@ export const ffmpegCore = {
 
     return new Promise<void>((resolve, reject) => {
       const child = spawn(FFMPEG, args);
-      let stderr = '';
-      child.stderr?.on('data', (d) => { stderr += d.toString(); });
+      let fullStderr = '';
+      child.stderr?.on('data', (d) => { fullStderr += d.toString(); });
       child.on('error', reject);
       child.on('close', (code) => {
         if (code === 0) resolve();
-        else reject(new Error(`Vertical render failed (code ${code}): ${stderr.slice(-500)}`));
+        else {
+          const meaningfulErr = extractMeaningfulFfmpegError(fullStderr);
+          const err: any = new Error(`Vertical render failed (code ${code}): ${meaningfulErr}`);
+          err.fullStderr = fullStderr;
+          err.exitCode = code;
+          reject(err);
+        }
       });
+    });
+  },
+
+  // 5b. Modular Basic Vertical Conversion (Independent Testable Stage)
+  async renderBasicVertical(params: {
+    sourceClip: string;
+    outputPath: string;
+    duration: number;
+    layoutMode?: 'blurred_background' | 'center_crop';
+    cropX?: number;
+  }) {
+    return this.renderVerticalShort({
+      ...params,
+      skipSubtitles: true,
+      skipOptionalAudio: true,
+    });
+  },
+
+  // 5c. Modular Subtitle Only Burn-in
+  async renderVerticalWithSubtitles(params: {
+    sourceClip: string;
+    outputPath: string;
+    duration: number;
+    subtitleAssPath: string;
+    layoutMode?: 'blurred_background' | 'center_crop';
+    cropX?: number;
+  }) {
+    return this.renderVerticalShort({
+      ...params,
+      skipSubtitles: false,
+      skipOptionalAudio: true,
     });
   },
 

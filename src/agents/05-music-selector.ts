@@ -29,7 +29,7 @@ export class MusicSelectionAgent extends BaseAgent<{ clipId: string; preferredGe
       genre: 'phonk' as const,
       bpm: 130,
       energy: 'high' as const,
-      filePath: '/assets/music/mus_phonk_drift.mp3',
+      filePath: '/assets/music/mus_phonk_drift.wav',
       duration: 60,
       licenseDetails: 'verified_creator_safe',
     };
@@ -38,7 +38,7 @@ export class MusicSelectionAgent extends BaseAgent<{ clipId: string; preferredGe
       : fallbackTrack;
 
     const safeTrack = matched || fallbackTrack;
-    const rawPath = safeTrack?.filePath || fallbackTrack.filePath;
+    const rawPath = safeTrack?.filePath || (safeTrack as any)?.file_path || fallbackTrack.filePath;
     const absPath = path.resolve(PUBLIC_DIR, rawPath.replace(/^\//, ''));
 
     return {

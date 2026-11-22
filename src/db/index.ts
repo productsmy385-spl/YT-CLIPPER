@@ -421,6 +421,88 @@ export function initDatabase() {
       details TEXT,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS creators (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      channel_id TEXT UNIQUE,
+      channel_url TEXT,
+      contact_email TEXT,
+      status TEXT DEFAULT 'verified',
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS creator_permissions (
+      id TEXT PRIMARY KEY,
+      creator_id TEXT NOT NULL,
+      channel_id TEXT,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      start_date TEXT,
+      expiry_date TEXT,
+      allowed_usage TEXT DEFAULT 'all',
+      commercial_usage_allowed INTEGER DEFAULT 0,
+      editing_allowed INTEGER DEFAULT 1,
+      republishing_allowed INTEGER DEFAULT 1,
+      media_access_method TEXT DEFAULT 'authorized_upload',
+      notes TEXT,
+      verified_by TEXT,
+      verified_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (creator_id) REFERENCES creators(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS content_licenses (
+      id TEXT PRIMARY KEY,
+      video_id TEXT NOT NULL,
+      channel_id TEXT,
+      license_type TEXT NOT NULL DEFAULT 'unknown',
+      license_url TEXT,
+      source_url TEXT,
+      verified_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS permission_evidence (
+      id TEXT PRIMARY KEY,
+      permission_id TEXT NOT NULL,
+      creator_id TEXT NOT NULL,
+      document_type TEXT NOT NULL,
+      document_url TEXT,
+      file_path TEXT,
+      notes TEXT,
+      uploaded_by TEXT DEFAULT 'admin',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (permission_id) REFERENCES creator_permissions(id),
+      FOREIGN KEY (creator_id) REFERENCES creators(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS source_rights_checks (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      video_id TEXT NOT NULL,
+      channel_id TEXT,
+      creator_id TEXT,
+      status TEXT NOT NULL,
+      is_allowed INTEGER NOT NULL DEFAULT 0,
+      reason TEXT NOT NULL,
+      license_type TEXT NOT NULL,
+      checked_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS attribution_records (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      video_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      creator_name TEXT NOT NULL,
+      source_url TEXT NOT NULL,
+      license_type TEXT NOT NULL,
+      attribution_text TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   // Safe non-destructive column migrations for existing SQLite databases

@@ -88,6 +88,13 @@ const navGroups: NavGroup[] = [
         badge: 'Live',
         badgeVariant: 'coral',
       },
+      {
+        title: 'Content Rights',
+        href: '/rights',
+        icon: ShieldCheck,
+        badge: 'Verified',
+        badgeVariant: 'seafoam',
+      },
     ],
   },
   {

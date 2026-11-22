@@ -386,3 +386,84 @@ export const publishingAnalytics = sqliteTable('publishing_analytics', {
   syncedAt: text('synced_at').notNull(),
 });
 
+// --- CONTENT RIGHTS & CREATOR AUTHORIZATIONS ---
+export const creators = sqliteTable('creators', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  channelId: text('channel_id').unique(),
+  channelUrl: text('channel_url'),
+  contactEmail: text('contact_email'),
+  status: text('status').default('verified'), // verified, pending, rejected, suspended
+  notes: text('notes'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const creatorPermissions = sqliteTable('creator_permissions', {
+  id: text('id').primaryKey(),
+  creatorId: text('creator_id').notNull(),
+  channelId: text('channel_id'),
+  status: text('status').notNull().default('PENDING'), // VERIFIED, CREATIVE_COMMONS, PENDING, REJECTED, EXPIRED, UNKNOWN
+  startDate: text('start_date'),
+  expiryDate: text('expiry_date'),
+  allowedUsage: text('allowed_usage').default('all'), // shorts_only, full_videos, commercial, editing_only, all
+  commercialUsageAllowed: integer('commercial_usage_allowed', { mode: 'boolean' }).default(false),
+  editingAllowed: integer('editing_allowed', { mode: 'boolean' }).default(true),
+  republishingAllowed: integer('republishing_allowed', { mode: 'boolean' }).default(true),
+  mediaAccessMethod: text('media_access_method').default('authorized_upload'), // authorized_upload, partner_api, licensed_feed, creator_drive
+  notes: text('notes'),
+  verifiedBy: text('verified_by'),
+  verifiedAt: text('verified_at'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+export const contentLicenses = sqliteTable('content_licenses', {
+  id: text('id').primaryKey(),
+  videoId: text('video_id').notNull(),
+  channelId: text('channel_id'),
+  licenseType: text('license_type').notNull().default('unknown'), // standard_youtube, creative_commons, custom_partner, public_domain, unknown
+  licenseUrl: text('license_url'),
+  sourceUrl: text('source_url'),
+  verifiedAt: text('verified_at').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+export const permissionEvidence = sqliteTable('permission_evidence', {
+  id: text('id').primaryKey(),
+  permissionId: text('permission_id').notNull(),
+  creatorId: text('creator_id').notNull(),
+  documentType: text('document_type').notNull(), // written_permission, signed_contract, cc_attribution_proof, email_confirmation
+  documentUrl: text('document_url'),
+  filePath: text('file_path'),
+  notes: text('notes'),
+  uploadedBy: text('uploaded_by').default('admin'),
+  createdAt: text('created_at').notNull(),
+});
+
+export const sourceRightsChecks = sqliteTable('source_rights_checks', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id'),
+  videoId: text('video_id').notNull(),
+  channelId: text('channel_id'),
+  creatorId: text('creator_id'),
+  status: text('status').notNull(), // VERIFIED, CREATIVE_COMMONS, PENDING, REJECTED, EXPIRED, UNKNOWN
+  isAllowed: integer('is_allowed', { mode: 'boolean' }).notNull().default(false),
+  reason: text('reason').notNull(),
+  licenseType: text('license_type').notNull(),
+  checkedAt: text('checked_at').notNull(),
+});
+
+export const attributionRecords = sqliteTable('attribution_records', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id'),
+  videoId: text('video_id').notNull(),
+  title: text('title').notNull(),
+  creatorName: text('creator_name').notNull(),
+  sourceUrl: text('source_url').notNull(),
+  licenseType: text('license_type').notNull(),
+  attributionText: text('attribution_text').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+
+

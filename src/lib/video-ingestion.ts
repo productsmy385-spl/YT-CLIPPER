@@ -19,7 +19,7 @@ export type IngestionErrorState =
   | 'SOURCE_PROCESSING_FAILED';
 
 export interface VideoSourceInfo {
-  type: 'youtube' | 'youtube_live' | 'local_upload' | 'authorized_stream';
+  type: 'youtube' | 'youtube_live' | 'direct_url' | 'cloud_storage' | 'local_upload' | 'authorized_stream';
   url?: string;
   videoId?: string;
   filePath?: string;
@@ -326,12 +326,13 @@ export const videoIngestionEngine = {
    * Conforms to official terms: separates metadata retrieval from video file acquisition.
    * Supports: local uploads, creator-authorized recordings, and pairing with authorized master stream capture.
    */
-  async inspectAndIngest(input: {
+  async inspectAndIngest(rawInput: string | {
     url?: string;
     filePath?: string;
     title?: string;
     useAuthorizedFallback?: boolean;
   }): Promise<VideoSourceInfo> {
+    const input = typeof rawInput === 'string' ? { url: rawInput } : rawInput;
     console.log('[VideoIngestion] --- INITIATING VIDEO INGESTION PROTOCOL ---');
 
     // Case 1: Local file upload or creator master file provided
@@ -396,7 +397,24 @@ export const videoIngestionEngine = {
       }
     }
 
-    // Case 2: YouTube URL provided
+    // Case 2: Direct Video URL (MP4, MOV, WebM, MKV)
+    if (input.url && (/^https?:\/\/.*\.(mp4|mov|webm|mkv|m4v)(\?.*)?$/i.test(input.url) || input.url.includes('/video/') || input.url.includes('/raw/'))) {
+      try {
+        const urlObj = new URL(input.url);
+        const fileName = path.basename(urlObj.pathname) || 'video.mp4';
+        return {
+          type: 'direct_url',
+          url: input.url,
+          title: input.title || fileName,
+          authorName: urlObj.hostname,
+          canProcess: true,
+          metadataRetrieved: true,
+          videoAcquired: false,
+        };
+      } catch {}
+    }
+
+    // Case 3: YouTube URL provided
     if (input.url) {
       const yt = this.parseYouTubeUrl(input.url);
       if (!yt.isValid || !yt.videoId) {
@@ -424,9 +442,9 @@ export const videoIngestionEngine = {
           videoId: yt.videoId,
           title: `YouTube Video (${yt.videoId})`,
           canProcess: false,
-          errorState: 'VIDEO_ACQUISITION_FAILED',
-          errorMessage: 'Video metadata was verified, but the actual video file is not available. Please upload an authorized recording or provide an authorized source file.',
-          metadataRetrieved: true,
+          errorState: 'VIDEO_UNAVAILABLE',
+          errorMessage: 'This YouTube video is private, deleted, or unavailable.',
+          metadataRetrieved: false,
           videoAcquired: false,
         };
       }
@@ -470,7 +488,7 @@ export const videoIngestionEngine = {
         }
       }
 
-      // YouTube metadata verified; acquisition worker will acquire stream during processing
+      // YouTube metadata verified; ready to initiate extraction workflow!
       return {
         type: yt.isLive ? 'youtube_live' : 'youtube',
         url: yt.cleanUrl || input.url,
@@ -478,12 +496,9 @@ export const videoIngestionEngine = {
         title: videoTitle,
         authorName: author,
         thumbnailUrl: thumbnail,
-        canProcess: false,
-        errorState: 'SOURCE_FILE_REQUIRED',
-        errorMessage: 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.',
+        canProcess: true,
         metadataRetrieved: true,
         videoAcquired: false,
-        availableActions: ['UPLOAD_FILE', 'ATTACH_CREATOR_FILE'],
       };
     }
 

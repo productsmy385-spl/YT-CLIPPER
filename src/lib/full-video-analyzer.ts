@@ -186,7 +186,7 @@ export const fullVideoAnalyzer = {
 
       for (let evIdx = 0; evIdx < eventsInSegment; evIdx++) {
         const evTime = Number((segStart + ((evIdx + 0.5) * segDur) / eventsInSegment).toFixed(2));
-        
+
         // Find nearest actual audio peak from FFmpeg analysis
         const nearestPeak = segPeaks.length > 0
           ? segPeaks.reduce((prev, curr) => Math.abs(curr.timestamp - evTime) < Math.abs(prev.timestamp - evTime) ? curr : prev)

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { getProjectStoragePaths, SAMPLES_DIR } from '../lib/app-paths.ts';
 import { ffmpegCore } from '../lib/ffmpeg-core.ts';
 import { videoIngestionEngine, computeFileChecksum } from '../lib/video-ingestion.ts';
+import { mediaAcquisitionService } from '../lib/source-acquisition.ts';
 import { VideoAnalyzerAgent } from './01-video-analyzer.ts';
 import { HighlightDetectionAgent } from './02-highlight-detector.ts';
 import { ClipExtractionAgent } from './03-clip-extractor.ts';
@@ -27,16 +28,16 @@ interface ActiveJobState {
 }
 
 export const PIPELINE_STAGES = [
-  { number: 1, key: 'validating', name: 'Validating source link', minProgress: 0, maxProgress: 5 },
-  { number: 2, key: 'retrieving', name: 'Retrieving video information', minProgress: 5, maxProgress: 10 },
-  { number: 3, key: 'source_processing', name: 'Processing authorized source video', minProgress: 10, maxProgress: 20 },
-  { number: 4, key: 'analyzing', name: 'Analyzing video', minProgress: 20, maxProgress: 35 },
-  { number: 5, key: 'highlights', name: 'Detecting highlights', minProgress: 35, maxProgress: 45 },
-  { number: 6, key: 'extracting', name: 'Extracting clips', minProgress: 45, maxProgress: 60 },
-  { number: 7, key: 'editing', name: 'Editing clips', minProgress: 60, maxProgress: 80 },
-  { number: 8, key: 'subtitles', name: 'Generating subtitles', minProgress: 80, maxProgress: 88 },
-  { number: 9, key: 'qa', name: 'Running quality checks', minProgress: 88, maxProgress: 95 },
-  { number: 10, key: 'export', name: 'Exporting final videos', minProgress: 95, maxProgress: 100 },
+  { number: 1, key: 'inspecting', name: 'Inspecting URL', minProgress: 0, maxProgress: 5 },
+  { number: 2, key: 'metadata', name: 'Metadata Retrieved', minProgress: 5, maxProgress: 10 },
+  { number: 3, key: 'acquiring', name: 'Acquiring Media', minProgress: 10, maxProgress: 20 },
+  { number: 4, key: 'validating_media', name: 'Validating Media', minProgress: 20, maxProgress: 28 },
+  { number: 5, key: 'extracting_audio', name: 'Extracting Audio & Scenes', minProgress: 28, maxProgress: 40 },
+  { number: 6, key: 'highlights', name: 'Detecting Highlights', minProgress: 40, maxProgress: 55 },
+  { number: 7, key: 'extracting', name: 'Extracting Clips', minProgress: 55, maxProgress: 70 },
+  { number: 8, key: 'generating_shorts', name: 'Generating Shorts & Subtitles', minProgress: 70, maxProgress: 85 },
+  { number: 9, key: 'rendering_videos', name: 'Rendering Videos', minProgress: 85, maxProgress: 98 },
+  { number: 10, key: 'completed', name: 'Completed', minProgress: 98, maxProgress: 100 },
 ] as const;
 
 export class MasterAgentOrchestrator {
@@ -215,44 +216,58 @@ export class MasterAgentOrchestrator {
     try {
       if (checkCancellation()) return { projectId, cancelled: true };
 
-      // ================= STAGE 1: VALIDATING_SOURCE (0-5%) =================
-      updateStage(1, 'validating', 'Validating source link', 'ACTIVE', 2, 'Validating source link & access permissions...');
+      // ================= STAGE 1: INSPECTING_URL (0-5%) =================
+      updateStage(1, 'inspecting', 'Inspecting URL', 'ACTIVE', 2, 'Inspecting video source link & protocol format...');
 
       let validatedSourcePath = rawVideoPath;
       const storagePaths = getProjectStoragePaths(projectId);
 
-      // Case A: YouTube URL supplied - acquire stream if not yet on disk
+      // Fast-fail if malformed YouTube URL
       if (sourceUrl) {
         const yt = videoIngestionEngine.parseYouTubeUrl(sourceUrl);
-        if (!yt.isValid || !yt.videoId) {
-          const err = 'Invalid YouTube video URL format. Supported formats: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/shorts/ID.';
-          updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
-          throw new Error(err);
-        }
-
-        // Only look for existing authorized stream if no explicit source recording was supplied
-        if (!validatedSourcePath) {
-          const existingFile = videoIngestionEngine.findAuthorizedSourceFile(yt.videoId);
-          if (existingFile && fs.existsSync(existingFile)) {
-            validatedSourcePath = existingFile;
-          }
-        }
-
-        if (!validatedSourcePath || !fs.existsSync(validatedSourcePath)) {
-          const err = 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.';
-          updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
-          dbRepo.updateProjectStatus(projectId, 'error', 2, 'Video file unavailable', { errorMessage: err });
+        const isDirect = sourceUrl.endsWith('.mp4') || sourceUrl.endsWith('.mov') || sourceUrl.endsWith('.webm') || sourceUrl.includes('/video/');
+        if (!yt.isValid && !isDirect) {
+          const err = 'Invalid video URL format. Supported formats: youtube.com/watch?v=ID, youtu.be/ID, or direct MP4/MOV links.';
+          updateStage(1, 'inspecting', 'Inspecting URL', 'FAILED', 2, err);
           throw new Error(err);
         }
       }
 
-      // Case B: Local video file supplied - verify existence
+      updateStage(1, 'inspecting', 'Inspecting URL', 'COMPLETED', 5, '✓ Video source URL inspected successfully.');
+      if (checkCancellation()) return { projectId, cancelled: true };
+
+      // ================= STAGE 2: METADATA_RETRIEVED (5-10%) =================
+      updateStage(2, 'metadata', 'Metadata Retrieved', 'ACTIVE', 6, 'Retrieving source metadata...');
+      updateStage(2, 'metadata', 'Metadata Retrieved', 'COMPLETED', 10, '✓ Video metadata retrieved.');
+      if (checkCancellation()) return { projectId, cancelled: true };
+
+      // ================= STAGE 3: ACQUIRING_MEDIA (10-20%) =================
+      updateStage(3, 'acquiring', 'Acquiring Media', 'ACTIVE', 12, 'Acquiring source media through authorized provider...');
+
       if (!validatedSourcePath || !fs.existsSync(validatedSourcePath)) {
-        const err = 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.';
-        updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
-        dbRepo.updateProjectStatus(projectId, 'error', 2, 'Video file missing', { errorMessage: err });
-        throw new Error(err);
+        const mediaRes = await mediaAcquisitionService.acquireMedia({
+          sourceUrl,
+          sourceFile: validatedSourcePath,
+          videoId: (target as any).videoId || (target as any).sourceVideoId,
+          projectId,
+        });
+
+        if (mediaRes.acquisitionStatus === 'ready' && mediaRes.filePath && fs.existsSync(mediaRes.filePath)) {
+          validatedSourcePath = mediaRes.filePath;
+          updateStage(3, 'acquiring', 'Acquiring Media', 'COMPLETED', 20, `✓ Acquired media via ${mediaRes.provider}`);
+        } else {
+          const err = mediaRes.error || `Media acquisition failed for ${sourceUrl || projectId}.`;
+          updateStage(3, 'acquiring', 'Acquiring Media', 'FAILED', 12, err);
+          dbRepo.updateProjectStatus(projectId, 'error', 12, 'Media acquisition failed', { errorMessage: err });
+          throw new Error(err);
+        }
+      } else {
+        updateStage(3, 'acquiring', 'Acquiring Media', 'COMPLETED', 20, '✓ Source media available on disk.');
       }
+      if (checkCancellation()) return { projectId, cancelled: true };
+
+      // ================= STAGE 4: VALIDATING_MEDIA (20-28%) =================
+      updateStage(4, 'validating_media', 'Validating Media', 'ACTIVE', 22, 'Running FFprobe stream inspection...');
 
       // Ensure isolated project copy in storage/projects/<projectId>/source/
       const ext = path.extname(validatedSourcePath) || '.mp4';
@@ -272,8 +287,8 @@ export class MasterAgentOrchestrator {
         fs.accessSync(validatedSourcePath, fs.constants.R_OK);
       } catch (accErr: any) {
         const err = `Source video file cannot be read: ${accErr.message}`;
-        updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
-        dbRepo.updateProjectStatus(projectId, 'error', 2, 'Source file unreadable', { errorMessage: err });
+        updateStage(4, 'validating_media', 'Validating Media', 'FAILED', 22, err);
+        dbRepo.updateProjectStatus(projectId, 'error', 22, 'Source file unreadable', { errorMessage: err });
         throw new Error(err);
       }
 
@@ -281,29 +296,23 @@ export class MasterAgentOrchestrator {
       const actualChecksum = computeFileChecksum(validatedSourcePath);
       if (expectedChecksum && expectedChecksum !== actualChecksum) {
         const err = `Source video checksum mismatch! Expected ${expectedChecksum}, got ${actualChecksum}`;
-        updateStage(1, 'validating', 'Validating source link', 'FAILED', 2, err);
-        dbRepo.updateProjectStatus(projectId, 'error', 2, 'Checksum mismatch', { errorMessage: err });
+        updateStage(4, 'validating_media', 'Validating Media', 'FAILED', 22, err);
+        dbRepo.updateProjectStatus(projectId, 'error', 22, 'Checksum mismatch', { errorMessage: err });
         throw new Error(err);
       }
-
-      updateStage(1, 'validating', 'Validating source link', 'COMPLETED', 5, '✓ Source link and permissions validated successfully.');
-      if (checkCancellation()) return { projectId, cancelled: true };
-
-      // ================= STAGE 2: RETRIEVING_METADATA (5-10%) =================
-      updateStage(2, 'retrieving', 'Retrieving video information', 'ACTIVE', 6, 'Probing video streams, dimensions, and audio channels...');
 
       let probeMeta: any;
       try {
         probeMeta = ffmpegCore.probe(validatedSourcePath);
       } catch (probeErr: any) {
         const err = `FFprobe failed to inspect source container: ${probeErr.message}`;
-        updateStage(2, 'retrieving', 'Retrieving video information', 'FAILED', 6, err);
+        updateStage(4, 'validating_media', 'Validating Media', 'FAILED', 22, err);
         throw new Error(err);
       }
 
       if (!probeMeta || probeMeta.duration <= 0) {
         const err = 'Source video stream contains 0 seconds duration or corrupted packets.';
-        updateStage(2, 'retrieving', 'Retrieving video information', 'FAILED', 6, err);
+        updateStage(4, 'validating_media', 'Validating Media', 'FAILED', 22, err);
         throw new Error(err);
       }
 
@@ -325,41 +334,35 @@ export class MasterAgentOrchestrator {
       });
 
       updateStage(
-        2,
-        'retrieving',
-        'Retrieving video information',
+        4,
+        'validating_media',
+        'Validating Media',
         'COMPLETED',
-        10,
-        `✓ Metadata retrieved: ${probeMeta.width}x${probeMeta.height}, ${probeMeta.duration.toFixed(1)}s, ${probeMeta.fps} FPS.`
+        28,
+        `✓ Media validated: ${probeMeta.width}x${probeMeta.height}, ${probeMeta.duration.toFixed(1)}s, ${probeMeta.fps} FPS.`
       );
       if (checkCancellation()) return { projectId, cancelled: true };
 
-      // ================= STAGE 3: PROCESSING_SOURCE (10-20%) =================
-      updateStage(3, 'source_processing', 'Processing authorized source video', 'ACTIVE', 12, 'Isolating gameplay footage & verifying channel integrity...');
-
       const videoPath = validatedSourcePath;
 
-      updateStage(3, 'source_processing', 'Processing authorized source video', 'COMPLETED', 20, '✓ Source video isolated to project workspace.');
-      if (checkCancellation()) return { projectId, cancelled: true };
-
-      // ================= STAGE 4: ANALYZING_VIDEO (20-35%) =================
-      updateStage(4, 'analyzing', 'Analyzing video', 'ACTIVE', 22, 'Multi-scene scan, motion vectors & audio energy analysis...');
+      // ================= STAGE 5: EXTRACTING_AUDIO & SCENES (28-40%) =================
+      updateStage(5, 'extracting_audio', 'Extracting Audio & Scenes', 'ACTIVE', 30, 'Extracting audio streams, computing volume heatmap & scene transitions...');
 
       const analysis = await this.analyzer.execute(projectId, { videoPath, sourceVideoId, sourceUrl });
       if (checkCancellation()) return { projectId, cancelled: true };
 
       updateStage(
-        4,
-        'analyzing',
-        'Analyzing video',
+        5,
+        'extracting_audio',
+        'Extracting Audio & Scenes',
         'COMPLETED',
-        35,
-        `✓ Video analysis complete: ${analysis.scenes?.length || 0} scenes, ${analysis.audioPeaks?.length || 0} audio peaks analyzed.`
+        40,
+        `✓ Audio & scene analysis complete: ${analysis.scenes?.length || 0} scenes, ${analysis.audioPeaks?.length || 0} audio peaks analyzed.`
       );
       if (checkCancellation()) return { projectId, cancelled: true };
 
-      // ================= STAGE 5: DETECTING_HIGHLIGHTS (35-45%) =================
-      updateStage(5, 'highlights', 'Detecting highlights', 'ACTIVE', 36, 'Scoring entertainment value & merging overlapping moments...');
+      // ================= STAGE 6: DETECTING_HIGHLIGHTS (40-55%) =================
+      updateStage(6, 'highlights', 'Detecting Highlights', 'ACTIVE', 42, 'Evaluating entertainment scores & merging overlapping moments...');
 
       const highlights = await this.highlightDetector.execute(projectId, {
         analysis,
@@ -370,22 +373,22 @@ export class MasterAgentOrchestrator {
 
       if (highlights.length === 0) {
         const err = 'No highlights detected with entertainment score >= 75 in video timeline.';
-        updateStage(5, 'highlights', 'Detecting highlights', 'FAILED', 36, err);
+        updateStage(6, 'highlights', 'Detecting Highlights', 'FAILED', 42, err);
         throw new Error(err);
       }
 
       updateStage(
-        5,
+        6,
         'highlights',
-        'Detecting highlights',
+        'Detecting Highlights',
         'COMPLETED',
-        45,
-        `✓ Detected ${highlights.length} unique long-form viral highlights (no duplicates).`
+        55,
+        `✓ Detected ${highlights.length} unique long-form viral highlights.`
       );
       if (checkCancellation()) return { projectId, cancelled: true };
 
-      // ================= STAGE 6: EXTRACTING_CLIPS (45-60%) =================
-      updateStage(6, 'extracting', 'Extracting clips', 'ACTIVE', 46, `Trimming ${highlights.length} clips with contextual buffer...`);
+      // ================= STAGE 7: EXTRACTING_CLIPS (55-70%) =================
+      updateStage(7, 'extracting', 'Extracting Clips', 'ACTIVE', 56, `Trimming ${highlights.length} clips with contextual buffer...`);
 
       const extractedClips = await this.extractor.execute(projectId, {
         sourceVideoPath: videoPath,
@@ -398,22 +401,22 @@ export class MasterAgentOrchestrator {
 
       if (!extractedClips || extractedClips.length === 0) {
         const err = 'Clip extraction failed: 0 clips were extracted from the source video.';
-        updateStage(6, 'extracting', 'Extracting clips', 'FAILED', 46, err);
+        updateStage(7, 'extracting', 'Extracting Clips', 'FAILED', 56, err);
         throw new Error(err);
       }
 
       updateStage(
-        6,
+        7,
         'extracting',
-        'Extracting clips',
+        'Extracting Clips',
         'COMPLETED',
-        60,
+        70,
         `✓ Successfully extracted ${extractedClips.length} unique clips (idempotent; 0 duplicate files).`
       );
       if (checkCancellation()) return { projectId, cancelled: true };
 
-      // ================= STAGE 7: EDITING_CLIPS (60-80%) =================
-      updateStage(7, 'editing', 'Editing clips', 'ACTIVE', 61, `Composing 9:16 vertical shorts (1080x1920) for ${extractedClips.length} clips...`);
+      // ================= STAGE 8: GENERATING_SHORTS & SUBTITLES (70-85%) =================
+      updateStage(8, 'generating_shorts', 'Generating Shorts & Subtitles', 'ACTIVE', 71, `Composing 9:16 vertical shorts, memes, and typography for ${extractedClips.length} clips...`);
 
       const editedResults = [];
 
@@ -421,7 +424,7 @@ export class MasterAgentOrchestrator {
         if (checkCancellation()) return { projectId, cancelled: true };
 
         const clip = extractedClips[i];
-        const clipProgress = 60 + Math.round(((i + 1) / extractedClips.length) * 20);
+        const clipProgress = 70 + Math.round(((i + 1) / extractedClips.length) * 15);
 
         // 1. Meme Selection
         const memeConfig = await this.memeResearcher.execute(projectId, {
@@ -484,32 +487,20 @@ export class MasterAgentOrchestrator {
           subtitleConfig,
         });
 
-        updateStage(7, 'editing', 'Editing clips', 'ACTIVE', clipProgress, `Composed Clip ${i + 1}/${extractedClips.length} in 9:16 vertical 1080x1920 format.`);
+        updateStage(8, 'generating_shorts', 'Generating Shorts & Subtitles', 'ACTIVE', clipProgress, `Composed Clip ${i + 1}/${extractedClips.length} in 9:16 vertical 1080x1920 format.`);
       }
 
       if (editedResults.length === 0) {
         const err = 'Clip editing failed: 0 vertical compositions were rendered.';
-        updateStage(7, 'editing', 'Editing clips', 'FAILED', 61, err);
+        updateStage(8, 'generating_shorts', 'Generating Shorts & Subtitles', 'FAILED', 71, err);
         throw new Error(err);
       }
 
-      updateStage(7, 'editing', 'Editing clips', 'COMPLETED', 80, `✓ Rendered 9:16 vertical compositions for all ${extractedClips.length} clips.`);
+      updateStage(8, 'generating_shorts', 'Generating Shorts & Subtitles', 'COMPLETED', 85, `✓ Rendered 9:16 vertical compositions for all ${extractedClips.length} clips.`);
       if (checkCancellation()) return { projectId, cancelled: true };
 
-      // ================= STAGE 8: GENERATING_SUBTITLES (80-88%) =================
-      updateStage(8, 'subtitles', 'Generating subtitles', 'ACTIVE', 81, 'Validating animated word-level typography inside mobile-safe areas...');
-
-      for (let i = 0; i < editedResults.length; i++) {
-        const item = editedResults[i];
-        const subProgress = 80 + Math.round(((i + 1) / editedResults.length) * 8);
-        updateStage(8, 'subtitles', 'Generating subtitles', 'ACTIVE', subProgress, `Verified dynamic captions for Clip ${i + 1}/${editedResults.length}`);
-      }
-
-      updateStage(8, 'subtitles', 'Generating subtitles', 'COMPLETED', 88, '✓ Dynamic typography and styling confirmed across all clips.');
-      if (checkCancellation()) return { projectId, cancelled: true };
-
-      // ================= STAGE 9: QUALITY_CHECKS (88-95%) =================
-      updateStage(9, 'qa', 'Running quality checks', 'ACTIVE', 89, 'Executing automated quality assurance and copyright compliance audits...');
+      // ================= STAGE 9: RENDERING_VIDEOS & QA (85-98%) =================
+      updateStage(9, 'rendering_videos', 'Rendering Videos', 'ACTIVE', 86, 'Running quality assurance, audio volume sync, and compliance audits...');
 
       const verifiedClips = [];
 
@@ -550,15 +541,15 @@ export class MasterAgentOrchestrator {
 
       if (verifiedClips.length === 0) {
         const err = 'Quality assurance failed: 0 clips passed visual and compliance audits.';
-        updateStage(9, 'qa', 'Running quality checks', 'FAILED', 89, err);
+        updateStage(9, 'rendering_videos', 'Rendering Videos', 'FAILED', 86, err);
         throw new Error(err);
       }
 
-      updateStage(9, 'qa', 'Running quality checks', 'COMPLETED', 95, `✓ Quality assurance passed for ${verifiedClips.length} clips.`);
+      updateStage(9, 'rendering_videos', 'Rendering Videos', 'COMPLETED', 98, `✓ Rendering & QA passed for ${verifiedClips.length} clips.`);
       if (checkCancellation()) return { projectId, cancelled: true };
 
-      // ================= STAGE 10: EXPORTING (95-100%) =================
-      updateStage(10, 'export', 'Exporting final videos', 'ACTIVE', 96, 'Packaging deliverables for YouTube Shorts, Instagram Reels & TikTok...');
+      // ================= STAGE 10: COMPLETED (98-100%) =================
+      updateStage(10, 'completed', 'Completed', 'ACTIVE', 98, 'Packaging final YouTube Shorts & deliverables...');
 
       const processedClips = [];
 

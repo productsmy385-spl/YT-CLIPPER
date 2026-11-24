@@ -11,6 +11,7 @@ export const STORAGE_PROJECTS_DIR = path.resolve(APP_ROOT, 'storage', 'projects'
 export const STORAGE_CLIPS_DIR = path.resolve(APP_ROOT, 'storage', 'clips');
 export const STORAGE_EXPORTS_DIR = path.resolve(APP_ROOT, 'storage', 'exports');
 export const STORAGE_UPLOADS_DIR = path.resolve(APP_ROOT, 'storage', 'uploads');
+export const STORAGE_DOWNLOADS_DIR = path.resolve(APP_ROOT, 'storage', 'downloads');
 export const STORAGE_AVATARS_DIR = path.resolve(APP_ROOT, 'storage', 'avatars');
 export const AUTHORIZED_SOURCES_DIR = path.resolve(APP_ROOT, 'storage', 'authorized_sources');
 export const PUBLIC_DIR = path.resolve(APP_ROOT, 'public');
@@ -26,6 +27,7 @@ fs.mkdirSync(STORAGE_PROJECTS_DIR, { recursive: true });
 fs.mkdirSync(STORAGE_CLIPS_DIR, { recursive: true });
 fs.mkdirSync(STORAGE_EXPORTS_DIR, { recursive: true });
 fs.mkdirSync(STORAGE_UPLOADS_DIR, { recursive: true });
+fs.mkdirSync(STORAGE_DOWNLOADS_DIR, { recursive: true });
 fs.mkdirSync(STORAGE_AVATARS_DIR, { recursive: true });
 fs.mkdirSync(AUTHORIZED_SOURCES_DIR, { recursive: true });
 fs.mkdirSync(SFX_DIR, { recursive: true });

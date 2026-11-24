@@ -6,7 +6,7 @@ import { videoIngestionEngine, computeFileChecksum } from '@/lib/video-ingestion
 import { mediaManager } from '@/lib/media-manager';
 import { getProjectStoragePaths } from '@/lib/app-paths';
 import { ffmpegCore } from '@/lib/ffmpeg-core';
-import { sourceAcquisitionEngine } from '@/lib/source-acquisition';
+import { sourceAcquisitionEngine, mediaAcquisitionService } from '@/lib/source-acquisition';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -106,43 +106,27 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Resolve initial source video path
-    let initialVideoPath = sourceFile;
-    let ytMeta: any = null;
+    const projectId = `proj_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const sourceVideoId = `sv_${projectId}`;
 
-    if (!initialVideoPath && sourceUrl) {
-      const parsedYt = videoIngestionEngine.parseYouTubeUrl(sourceUrl);
-      if (parsedYt.videoId) {
-        const acquisition = await sourceAcquisitionEngine.acquireAuthorizedSource({
-          videoId: parsedYt.videoId,
-          sourceUrl,
-          creatorName: body.creatorName,
-        });
+    // Acquire source video via unified MediaAcquisitionService
+    const mediaRes = await mediaAcquisitionService.acquireMedia({
+      sourceUrl,
+      sourceFile,
+      projectId,
+      creatorName: body.creatorName,
+    });
 
-        if (acquisition.success && acquisition.filePath && fs.existsSync(acquisition.filePath)) {
-          initialVideoPath = acquisition.filePath;
-          console.log(`[ProjectsAPI] Acquired source via ${acquisition.provider}: ${initialVideoPath}`);
-        } else {
-          return NextResponse.json(
-            {
-              error: acquisition.error || 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.',
-              errorState: 'SOURCE_FILE_REQUIRED',
-              rights: acquisition.rightsResult,
-              metadataRetrieved: true,
-              videoAcquired: false,
-            },
-            { status: 422 }
-          );
-        }
-      }
-    }
-
-    // Validate that a genuine, existing, readable source video is available
-    if (!initialVideoPath || !fs.existsSync(initialVideoPath)) {
+    if (mediaRes.acquisitionStatus === 'failed' || !mediaRes.filePath || !fs.existsSync(mediaRes.filePath)) {
+      console.warn(`[ProjectsAPI] Media acquisition failed for project ${projectId}: ${mediaRes.error}`);
       return NextResponse.json(
         {
-          error: 'Source metadata verified, but an authorized video file is required before extraction can begin. Please upload your original recording.',
-          errorState: 'SOURCE_FILE_REQUIRED',
+          error: mediaRes.error || 'Media acquisition failed.',
+          errorState: 'VIDEO_ACQUISITION_FAILED',
+          sourceType: mediaRes.sourceType,
+          videoId: mediaRes.videoId,
+          canRetry: mediaRes.canRetry ?? true,
+          availableAlternatives: mediaRes.availableAlternatives || ['upload', 'direct_url'],
           metadataRetrieved: Boolean(sourceUrl),
           videoAcquired: false,
         },
@@ -150,14 +134,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const projectId = `proj_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const sourceVideoId = `sv_${projectId}`;
-    const parsedYt = sourceUrl ? videoIngestionEngine.parseYouTubeUrl(sourceUrl) : null;
-    const projectTitle = title || ytMeta?.title || (parsedYt?.videoId ? `GTA 6 Gameplay (${parsedYt.videoId})` : 'GTA 6 Gameplay Shorts');
-    const storagePaths = getProjectStoragePaths(projectId);
+    const projectIsolatedSourcePath = mediaRes.filePath;
+    const sourceChecksum = mediaRes.metadata?.checksum || computeFileChecksum(projectIsolatedSourcePath);
 
     try {
-      fs.accessSync(initialVideoPath, fs.constants.R_OK);
+      fs.accessSync(projectIsolatedSourcePath, fs.constants.R_OK);
     } catch (permErr: any) {
       return NextResponse.json(
         {
@@ -168,17 +149,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let probeMeta: any;
-    try {
-      probeMeta = ffmpegCore.probe(initialVideoPath);
-    } catch (probeErr: any) {
-      return NextResponse.json(
-        {
-          error: `Failed to probe source video container: ${probeErr.message}`,
-          errorState: 'SOURCE_PROCESSING_FAILED',
-        },
-        { status: 422 }
-      );
+    let probeMeta: any = mediaRes.metadata;
+    if (!probeMeta || !probeMeta.duration) {
+      try {
+        probeMeta = ffmpegCore.probe(projectIsolatedSourcePath);
+      } catch (probeErr: any) {
+        return NextResponse.json(
+          {
+            error: `Failed to probe source video container: ${probeErr.message}`,
+            errorState: 'SOURCE_PROCESSING_FAILED',
+          },
+          { status: 422 }
+        );
+      }
     }
 
     if (!probeMeta || probeMeta.duration <= 0) {
@@ -191,25 +174,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Copy source to isolated project storage
-    const ext = path.extname(initialVideoPath) || '.mp4';
-    const projectIsolatedSourcePath = path.join(storagePaths.sourceDir, `${projectId}_${sourceVideoId}_source${ext}`);
-
-    try {
-      fs.copyFileSync(initialVideoPath, projectIsolatedSourcePath);
-      console.log(`[ProjectsAPI] Copied source to isolated project storage: ${projectIsolatedSourcePath}`);
-    } catch (copyErr: any) {
-      console.error(`[ProjectsAPI] Failed to isolate source file:`, copyErr);
-      return NextResponse.json(
-        {
-          error: `Failed to copy source video to project storage: ${copyErr.message}`,
-          errorState: 'SOURCE_PROCESSING_FAILED',
-        },
-        { status: 500 }
-      );
-    }
-
-    const sourceChecksum = computeFileChecksum(projectIsolatedSourcePath);
+    const parsedYt = sourceUrl ? videoIngestionEngine.parseYouTubeUrl(sourceUrl) : null;
+    const projectTitle = title || (parsedYt?.videoId ? `GTA 6 Gameplay (${parsedYt.videoId})` : 'GTA 6 Gameplay Shorts');
 
     dbRepo.createProject({
       id: projectId,
@@ -233,22 +199,22 @@ export async function POST(req: NextRequest) {
       fps: probeMeta.fps,
       bitrate: probeMeta.bitrate,
       audioChannels: probeMeta.audioChannels,
-      originSource: sourceUrl ? 'youtube_stream' : 'local_upload',
+      originSource: sourceUrl ? (mediaRes.sourceType === 'direct_url' ? 'direct_url' : 'youtube_stream') : 'local_upload',
       sha256Checksum: sourceChecksum,
     });
 
-    // 3. Initialize all 10 stages in database
+    // 3. Initialize all 10 stages in database matching MasterAgentOrchestrator
     const stages = [
-      { num: 1, key: 'validating', name: 'Validating source link' },
-      { num: 2, key: 'retrieving', name: 'Retrieving video information' },
-      { num: 3, key: 'source_processing', name: 'Processing authorized source video' },
-      { num: 4, key: 'analyzing', name: 'Analyzing video' },
-      { num: 5, key: 'highlights', name: 'Detecting highlights' },
-      { num: 6, key: 'extracting', name: 'Extracting clips' },
-      { num: 7, key: 'editing', name: 'Editing clips' },
-      { num: 8, key: 'subtitles', name: 'Generating subtitles' },
-      { num: 9, key: 'qa', name: 'Running quality checks' },
-      { num: 10, key: 'export', name: 'Exporting final videos' },
+      { num: 1, key: 'inspecting', name: 'Inspecting URL' },
+      { num: 2, key: 'metadata', name: 'Metadata Retrieved' },
+      { num: 3, key: 'acquiring', name: 'Acquiring Media' },
+      { num: 4, key: 'validating_media', name: 'Validating Media' },
+      { num: 5, key: 'extracting_audio', name: 'Extracting Audio & Scenes' },
+      { num: 6, key: 'highlights', name: 'Detecting Highlights' },
+      { num: 7, key: 'extracting', name: 'Extracting Clips' },
+      { num: 8, key: 'generating_shorts', name: 'Generating Shorts & Subtitles' },
+      { num: 9, key: 'rendering_videos', name: 'Rendering Videos' },
+      { num: 10, key: 'completed', name: 'Completed' },
     ];
 
     stages.forEach((stg) => {
@@ -264,7 +230,7 @@ export async function POST(req: NextRequest) {
     });
 
     // 4. Mark project in_progress at Stage 1
-    dbRepo.updateProjectStatus(projectId, 'in_progress', 2, 'Validating source link', {
+    dbRepo.updateProjectStatus(projectId, 'in_progress', 2, 'Inspecting URL', {
       stageId: '1',
       stageStatus: 'ACTIVE',
     });
@@ -292,7 +258,7 @@ export async function POST(req: NextRequest) {
       projectId,
       status: 'in_progress',
       progress: 2,
-      currentStage: 'Validating source link',
+      currentStage: 'Inspecting URL',
       sourceVideoId,
       sourceChecksum,
       jobId,

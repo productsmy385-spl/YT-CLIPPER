@@ -33,17 +33,10 @@ export async function POST(req: NextRequest) {
         rights,
       });
 
-      if (acquisition.isAvailable) {
+      // If metadata was retrieved successfully, the user is eligible to initiate extraction.
+      // The backend media acquisition pipeline will resolve the media upon starting extraction.
+      if (sourceInfo.metadataRetrieved && !sourceInfo.errorState) {
         sourceInfo.canProcess = true;
-        sourceInfo.videoAcquired = true;
-        sourceInfo.availableActions = acquisition.availableActions as any;
-        sourceInfo.errorMessage = undefined;
-        sourceInfo.errorState = undefined;
-      } else {
-        sourceInfo.canProcess = false;
-        sourceInfo.errorState = 'SOURCE_FILE_REQUIRED';
-        sourceInfo.errorMessage = acquisition.reason;
-        sourceInfo.availableActions = acquisition.availableActions as any;
       }
     }
 

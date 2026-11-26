@@ -17,7 +17,8 @@ export function buildCues(transcript: TranscriptSegment[], start: number, end: n
   const words = transcript
     .flatMap((s) => s.words)
     .filter((w) => w.end > start && w.start < end)
-    .map((w) => ({ start: Math.max(w.start, start), end: Math.min(w.end, end), text: w.text, highlight: kw.has(norm(w.text)) || /\d/.test(w.text) }));
+    .map((w) => ({ start: Math.max(w.start, start), end: Math.min(w.end, end), text: w.text, highlight: kw.has(norm(w.text)) || /\d/.test(w.text) }))
+    .sort((a, b) => a.start - b.start);
   const cues: CaptionCue[] = [];
   let cur: typeof words = [];
   const flush = () => {
@@ -39,14 +40,21 @@ export function buildCues(transcript: TranscriptSegment[], start: number, end: n
 /** Make cue timing valid: min 0.25 s, no overlaps, inside [start,end]. Returns number of fixes. */
 export function validateCueTiming(cues: CaptionCue[], start: number, end: number): number {
   let fixes = 0;
+  cues.sort((a, b) => a.start - b.start);
+  // Strictly sequential: each cue starts at or after the previous one ends, lasts >= 0.25 s, stays inside [start,end].
   for (let i = 0; i < cues.length; i++) {
     const c = cues[i];
-    if (c.start < start) { c.start = start; fixes++; }
+    const prevEnd = i > 0 ? cues[i - 1].end : start;
+    if (c.start < prevEnd) { c.start = prevEnd; fixes++; }
     if (c.end > end) { c.end = end; fixes++; }
     if (c.end - c.start < 0.25) { c.end = Math.min(end, c.start + 0.25); fixes++; }
-    const next = cues[i + 1];
-    if (next && c.end > next.start) { c.end = next.start; fixes++; }
+    for (const w of c.words) {
+      w.start = Math.min(Math.max(w.start, c.start), c.end);
+      w.end = Math.min(Math.max(w.end, w.start), c.end);
+    }
   }
+  // Drop cues squeezed to nothing at the very end of the clip.
+  for (let i = cues.length - 1; i >= 0; i--) if (cues[i].end - cues[i].start < 0.1) { cues.splice(i, 1); fixes++; }
   return fixes;
 }
 

@@ -119,7 +119,7 @@ export class AudioIntelligenceAgent extends BaseAgent<AudioIntelligenceInput, Au
                 {
                   text:
                     `This audio is ${c.dur.toFixed(0)} seconds long. Transcribe every spoken word verbatim in the original language, ` +
-                    `as segments no longer than about 8 seconds each, with accurate start and end times. Ignore in-game background chatter you cannot make out. ` +
+                    `as segments no longer than about 8 seconds each, with accurate start and end times. Ignore in-game background chatter you cannot make out. Put ONLY spoken words in segment text, never sound labels like (laughter) or crash; segments must not overlap. ` +
                     `Also list non-speech sound events (laughter, screams, excited shouts, cheering, gunfire, explosions, crashes, sirens, music) with start, end, ` +
                     `a short description and an intensity from 1 to 10. If there is no speech, return an empty segments list.`,
                 },
@@ -140,7 +140,8 @@ export class AudioIntelligenceAgent extends BaseAgent<AudioIntelligenceInput, Au
             const end = Math.min(c.start + c.dur, Math.max(Number(s.end), Number(s.start) + 0.2) + c.start);
             const text = String(s.text || '').trim();
             if (!text || !(end > start)) continue;
-            segments.push({ start, end, text, words: wordsFromSegment(start, end, text) });
+            const clean = cleanTranscriptText(text);
+            if (clean) segments.push({ start, end, text: clean, words: wordsFromSegment(start, end, clean) });
           }
           for (const e of r.events || []) {
             const start = Math.max(0, Number(e.start)) + c.start;
@@ -149,6 +150,14 @@ export class AudioIntelligenceAgent extends BaseAgent<AudioIntelligenceInput, Au
           }
         }
         segments.sort((a, b) => a.start - b.start);
+        // Gemini sometimes returns overlapping segments; make them sequential so caption timing stays valid.
+        for (let i = 1; i < segments.length; i++) {
+          const prev = segments[i - 1], cur = segments[i];
+          if (cur.start < prev.end) {
+            cur.start = Math.min(prev.end, cur.end - 0.2);
+            cur.words = wordsFromSegment(cur.start, cur.end, cur.text);
+          }
+        }
         ai.used = true;
         ai.model = geminiModel();
       } catch (err: any) {
@@ -161,4 +170,21 @@ export class AudioIntelligenceAgent extends BaseAgent<AudioIntelligenceInput, Au
     ctx.progress(1, `${segments.length} transcript segments, ${audioEvents.length} sound events`);
     return { hasAudio: true, loudness, silences, transcript: { language, segments }, audioEvents: audioEvents.sort((a, b) => a.start - b.start), ai };
   }
+}
+
+const SOUND_LABELS = /^(laughter|laughs?|laughing|crash|music|applause|gunshots?|gunfire|explosions?|siren|screams?|screaming|cheering|noise|inaudible)$/i;
+
+/** Remove non-speech labels Gemini sometimes mixes into transcript text. Exported for tests. */
+export function cleanTranscriptText(text: string): string {
+  // Any non-Latin script in the segment: English sound words there are labels, not speech.
+  const nonLatin = /[Ͱ-￿]/.test(text);
+  const tokens = text.replace(/[\[(][^\])]{1,40}[\])]/g, ' ').split(/\s+/).filter(Boolean);
+  // A segment made only of sound labels ("laughter", "crash") is not speech.
+  if (tokens.length && tokens.length <= 3 && tokens.every((w) => SOUND_LABELS.test(w.replace(/[^\w]/g, '')))) return '';
+  return text
+    .replace(/[\[(][^\])]{1,40}[\])]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w && !(nonLatin && SOUND_LABELS.test(w.replace(/[^\w]/g, ''))))
+    .join(' ')
+    .trim();
 }

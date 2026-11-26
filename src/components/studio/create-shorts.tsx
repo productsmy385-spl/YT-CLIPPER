@@ -153,7 +153,7 @@ export function CreateShorts() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">Create shorts</h1>
-        <p className="text-sm text-muted-foreground mt-1">Paste a YouTube link from your channel or upload a video. AI finds the best moments and cuts them into shorts you can edit.</p>
+        <p className="text-sm text-muted-foreground mt-1">Paste a public YouTube link or upload a video. AI finds the best moments and cuts them into shorts you can edit.</p>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -166,7 +166,7 @@ export function CreateShorts() {
                 <span className="text-xs text-muted-foreground truncate">Channel: <span className="font-semibold text-foreground">{yt.channel?.title}</span></span>
               ) : (
                 <a href="/api/youtube/connect?return=/" className="text-xs font-semibold text-primary hover:underline">
-                  {yt.state === 'REAUTH_REQUIRED' ? 'Renew YouTube connection' : 'Connect YouTube'}
+                  {yt.state === 'REAUTH_REQUIRED' ? 'Renew YouTube connection' : 'Connect YouTube (optional)'}
                 </a>
               )
             )}
@@ -192,7 +192,7 @@ export function CreateShorts() {
                 <p className="font-semibold text-sm leading-snug line-clamp-2">{inspection.title}</p>
                 <p className="text-xs text-muted-foreground">{inspection.channelTitle || 'Unknown channel'} · {fmt(inspection.durationSeconds)}</p>
                 {inspection.canAcquire ? (
-                  <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> On your channel — ready to process</p>
+                  <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> {inspection.owned ? 'On your channel — ready to process' : 'Public video — ready to process'}</p>
                 ) : (
                   <p className="text-xs text-amber-700 dark:text-amber-300">
                     {inspection.message}{' '}

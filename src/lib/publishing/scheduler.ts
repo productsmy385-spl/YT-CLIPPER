@@ -153,5 +153,5 @@ export const publishingScheduler = {
   },
 };
 
-// Start daemon automatically on load
-publishingScheduler.startDaemon();
+// Started by src/instrumentation-node.ts when the server boots (never on import: importing it during
+// `next build` used to publish due posts from the build machine).

@@ -7,15 +7,13 @@ import { videoIngestionEngine } from '../video-ingestion.ts';
 /**
  * YouTube media source.
  *
- * The YouTube Data API returns metadata only; it never returns video bytes. This module therefore separates
- * INSPECTION (metadata, always available for public videos) from ACQUISITION (actual media), and only acquires
- * media for videos that belong to the YouTube channel the user connected via OAuth: the user is the rights
- * holder of those videos. Ownership is verified automatically against the Data API (no forms, no prompts).
+ * The YouTube Data API returns metadata only; it never returns video bytes. This module separates INSPECTION
+ * (metadata) from ACQUISITION (actual media, fetched with yt-dlp). By default any public or unlisted video can be
+ * fetched; private / members-only / sign-in-required videos never are. YOUTUBE_ACQUISITION=owned restricts fetching
+ * to the OAuth-connected channel, =off disables it.
  *
- * Videos from other channels are never downloaded; the user is told once, plainly, and can drop the original
- * file into the same screen instead.
- *
- * Operators can switch owned-video acquisition off entirely with YOUTUBE_OWNER_ACQUISITION=off.
+ * Note for operators: downloading other channels' videos is against YouTube's Terms of Service, and re-publishing
+ * clips of others' content can trigger Content ID claims. That is the operator's decision (default: allowed).
  */
 
 export type YouTubeAcquisitionBlocker =
@@ -130,41 +128,37 @@ export async function inspectYouTubeVideo(rawUrl: string): Promise<YouTubeInspec
     canAcquire: false,
   };
 
-  const status = connectedChannelId ? null : await youtubeOAuth.getStatusReport().catch(() => null);
-  if (process.env.YOUTUBE_OWNER_ACQUISITION === 'off') {
+  // Acquisition policy (operator-controlled): "all" (default) fetches any public or unlisted video; "owned" only
+  // videos on the connected channel; "off" disables fetching. Private, members-only and sign-in-required videos are
+  // never fetched (that would require bypassing authentication).
+  const legacyOff = process.env.YOUTUBE_OWNER_ACQUISITION === 'off';
+  const mode = legacyOff ? 'off' : (process.env.YOUTUBE_ACQUISITION || 'all').toLowerCase();
+  if (mode === 'off') {
     return { ...base, blocker: 'DISABLED', message: 'Fetching from YouTube is turned off on this server. Add the video file instead.' };
   }
-  if (!connectedChannelId) {
-    const reauth = status?.state === 'REAUTH_REQUIRED';
-    return {
-      ...base,
-      blocker: reauth ? 'REAUTH_REQUIRED' : 'NOT_CONNECTED',
-      message: reauth
-        ? 'Your YouTube connection needs renewing before videos from your channel can be fetched.'
-        : 'Connect your YouTube channel to fetch your own videos automatically, or add the video file.',
-    };
-  }
-  if (!item) {
-    return { ...base, blocker: 'NOT_FOUND', message: 'YouTube did not return this video. It may be private to another account, or removed.' };
-  }
-  if (!owned) {
-    return {
-      ...base,
-      blocker: 'NOT_OWNED',
-      message: `This video belongs to ${base.channelTitle || 'another channel'}, not your connected channel, so it can't be fetched. Add the original video file to make shorts from it.`,
-    };
-  }
   if (privacyStatus === 'private') {
-    return { ...base, blocker: 'PRIVATE_VIDEO', message: 'Private videos cannot be fetched. Set it to Unlisted on YouTube, or add the file.' };
+    return { ...base, blocker: 'PRIVATE_VIDEO', message: 'This video is private, so it cannot be fetched. Ask for it to be made public or unlisted, or add the file.' };
   }
   if (isLive) {
     return { ...base, blocker: 'LIVE_IN_PROGRESS', message: 'This stream is still live. Start once the stream has ended and been processed by YouTube.' };
+  }
+  if (mode === 'owned' && !owned) {
+    if (!connectedChannelId) {
+      const status = await youtubeOAuth.getStatusReport().catch(() => null);
+      const reauth = status?.state === 'REAUTH_REQUIRED';
+      return {
+        ...base,
+        blocker: reauth ? 'REAUTH_REQUIRED' : 'NOT_CONNECTED',
+        message: reauth ? 'Your YouTube connection needs renewing before videos from your channel can be fetched.' : 'Connect your YouTube channel to fetch your own videos, or add the video file.',
+      };
+    }
+    return { ...base, blocker: 'NOT_OWNED', message: `This server only fetches videos from your connected channel; this one belongs to ${base.channelTitle || 'another channel'}. Add the video file instead.` };
   }
   return { ...base, canAcquire: true };
 }
 
 // ---------------------------------------------------------------------------------------------
-// Acquisition of an owned video
+// Acquisition (only for inspections with canAcquire = true)
 // ---------------------------------------------------------------------------------------------
 
 function resolveYtDlp(): { cmd: string; prefix: string[] } | null {
@@ -189,16 +183,16 @@ export class AcquisitionError extends Error {
 }
 
 /**
- * Download an owned video (verified by inspectYouTubeVideo) to `destFile` as H.264/AAC MP4 (≤1080p).
+ * Download a video that inspectYouTubeVideo cleared to `destFile` as H.264/AAC MP4 (≤1080p).
  * Progress is reported 0..100. Throws AcquisitionError with a user-readable message.
  */
-export async function acquireOwnedYouTubeVideo(
+export async function acquireYouTubeVideo(
   inspection: YouTubeInspection,
   destFile: string,
   onProgress: (pct: number) => void,
   signal?: AbortSignal
 ): Promise<string> {
-  if (!inspection.canAcquire || !inspection.owned) {
+  if (!inspection.canAcquire) {
     throw new AcquisitionError(inspection.message || 'This video cannot be fetched.', false);
   }
   const tool = resolveYtDlp();
@@ -250,6 +244,9 @@ export async function acquireOwnedYouTubeVideo(
       if (signal?.aborted) return reject(new AcquisitionError('Cancelled.', false));
       if (code !== 0) {
         const errLine = stderrTail.split('\n').reverse().find((l) => l.includes('ERROR')) || stderrTail.trim().split('\n').pop() || '';
+        if (/confirm your age|members-only|join this channel|Private video|This video is private|video is unavailable/i.test(stderrTail)) {
+          return reject(new AcquisitionError('This video needs a signed-in YouTube account (age-restricted, members-only, private or removed), so it cannot be fetched. Add the video file instead.', false));
+        }
         const botWall = /Sign in to confirm|not a bot|HTTP Error 429/i.test(stderrTail);
         return reject(
           new AcquisitionError(

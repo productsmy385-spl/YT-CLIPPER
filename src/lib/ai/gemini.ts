@@ -28,10 +28,12 @@ function key(): string {
 export class GeminiError extends Error {
   readonly status: number;
   readonly retryable: boolean;
-  constructor(message: string, status: number, retryable: boolean) {
+  readonly quotaExhausted: boolean;
+  constructor(message: string, status: number, retryable: boolean, quotaExhausted = false) {
     super(message);
     this.status = status;
     this.retryable = retryable;
+    this.quotaExhausted = quotaExhausted;
   }
 }
 
@@ -42,7 +44,15 @@ async function call(url: string, init: RequestInit & { duplex?: 'half' }, timeou
     try {
       msg = (await res.json()).error?.message || msg;
     } catch {}
-    throw new GeminiError(`Gemini API: ${msg}`, res.status, res.status === 429 || res.status >= 500);
+    // A daily/plan quota will not recover in seconds: report it as non-retryable so callers switch model at once.
+    const quotaExhausted = res.status === 429 && /per day|PerDay|quota exceeded for metric|check your plan and billing/i.test(msg);
+    const short = msg.split('\n')[0].slice(0, 300);
+    throw new GeminiError(
+      quotaExhausted ? `Gemini API quota exhausted for this key (${short}). Enable billing in Google AI Studio to lift free-tier limits.` : `Gemini API: ${short}`,
+      res.status,
+      !quotaExhausted && (res.status === 429 || res.status >= 500),
+      quotaExhausted
+    );
   }
   return res;
 }
@@ -54,43 +64,61 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
       return await fn();
     } catch (err: any) {
       last = err;
-      const retryable = err instanceof GeminiError ? err.retryable : err?.name === 'TimeoutError' || /fetch failed|ECONNRESET|ETIMEDOUT/i.test(String(err?.message));
+      const retryable =
+        err instanceof GeminiError
+          ? err.retryable
+          : err?.name === 'TimeoutError' || /fetch failed|ECONNRESET|ETIMEDOUT/i.test(String(err?.message));
       if (!retryable || i === attempts - 1) throw err;
-      await new Promise((r) => setTimeout(r, 2000 * 2 ** i + Math.random() * 1000));
+      const overloaded = err instanceof GeminiError && (err.status === 503 || err.status === 429);
+      await new Promise((r) => setTimeout(r, (overloaded ? 5000 : 2000) * 2 ** i + Math.random() * 1000));
     }
   }
   throw last;
 }
 
-export interface UploadedFile { name: string; uri: string; mimeType: string }
+export interface UploadedFile {
+  name: string;
+  uri: string;
+  mimeType: string;
+}
 
 /** Resumable upload of a local file, then wait until Gemini has processed it (state ACTIVE). */
 export async function uploadFile(filePath: string, mimeType: string, displayName: string): Promise<UploadedFile> {
   const size = fs.statSync(filePath).size;
   const start = await withRetry(() =>
-    call(`${BASE}/upload/v1beta/files`, {
-      method: 'POST',
-      headers: {
-        'x-goog-api-key': key(),
-        'X-Goog-Upload-Protocol': 'resumable',
-        'X-Goog-Upload-Command': 'start',
-        'X-Goog-Upload-Header-Content-Length': String(size),
-        'X-Goog-Upload-Header-Content-Type': mimeType,
-        'Content-Type': 'application/json',
+    call(
+      `${BASE}/upload/v1beta/files`,
+      {
+        method: 'POST',
+        headers: {
+          'x-goog-api-key': key(),
+          'X-Goog-Upload-Protocol': 'resumable',
+          'X-Goog-Upload-Command': 'start',
+          'X-Goog-Upload-Header-Content-Length': String(size),
+          'X-Goog-Upload-Header-Content-Type': mimeType,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ file: { display_name: displayName } }),
       },
-      body: JSON.stringify({ file: { display_name: displayName } }),
-    }, 30000)
+      30000,
+    ),
   );
   const uploadUrl = start.headers.get('x-goog-upload-url');
   if (!uploadUrl) throw new GeminiError('Gemini did not return an upload URL.', 500, true);
 
-  const res = await withRetry(() =>
-    call(uploadUrl, {
-      method: 'POST',
-      headers: { 'Content-Length': String(size), 'X-Goog-Upload-Offset': '0', 'X-Goog-Upload-Command': 'upload, finalize' },
-      body: Readable.toWeb(fs.createReadStream(filePath)) as any,
-      duplex: 'half',
-    }, 30 * 60 * 1000), 2
+  const res = await withRetry(
+    () =>
+      call(
+        uploadUrl,
+        {
+          method: 'POST',
+          headers: { 'Content-Length': String(size), 'X-Goog-Upload-Offset': '0', 'X-Goog-Upload-Command': 'upload, finalize' },
+          body: Readable.toWeb(fs.createReadStream(filePath)) as any,
+          duplex: 'half',
+        },
+        30 * 60 * 1000,
+      ),
+    2,
   );
   let file = (await res.json()).file;
 
@@ -135,23 +163,43 @@ export async function generateJson<T>(opts: {
   if (opts.mediaResolution) body.generationConfig.mediaResolution = opts.mediaResolution;
   if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] };
 
-  return withRetry(async () => {
-    const res = await call(`${BASE}/v1beta/models/${geminiModel()}:generateContent`, {
-      method: 'POST',
-      headers: { 'x-goog-api-key': key(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }, opts.timeoutMs ?? 10 * 60 * 1000);
-    const j = await res.json();
-    const cand = j.candidates?.[0];
-    const text = (cand?.content?.parts || []).map((p: any) => p.text || '').join('');
-    if (!text) {
-      const reason = cand?.finishReason || j.promptFeedback?.blockReason || 'empty response';
-      throw new GeminiError(`Gemini returned no content (${reason}).`, 502, reason === 'empty response');
-    }
+  // Overload (503/429) is common at peak times: retry with backoff, then fall back to a second model once.
+  const models = [geminiModel(), process.env.GEMINI_FALLBACK_MODEL || 'gemini-flash-lite-latest'].filter(
+    (m, i, a) => m && a.indexOf(m) === i,
+  );
+  let lastErr: any;
+  for (const model of models) {
     try {
-      return JSON.parse(text) as T;
-    } catch {
-      throw new GeminiError(`Gemini returned malformed JSON (finish reason ${cand?.finishReason}).`, 502, true);
+      return await withRetry(async () => {
+        const res = await call(
+          `${BASE}/v1beta/models/${model}:generateContent`,
+          {
+            method: 'POST',
+            headers: { 'x-goog-api-key': key(), 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          },
+          opts.timeoutMs ?? 10 * 60 * 1000,
+        );
+        const j = await res.json();
+        const cand = j.candidates?.[0];
+        const text = (cand?.content?.parts || []).map((p: any) => p.text || '').join('');
+        if (!text) {
+          const reason = cand?.finishReason || j.promptFeedback?.blockReason || 'empty response';
+          throw new GeminiError(`Gemini returned no content (${reason}).`, 502, reason === 'empty response');
+        }
+        try {
+          return JSON.parse(text) as T;
+        } catch {
+          throw new GeminiError(`Gemini returned malformed JSON (finish reason ${cand?.finishReason}).`, 502, true);
+        }
+      }, 5);
+    } catch (err: any) {
+      lastErr = err;
+      if (!(err instanceof GeminiError && (err.retryable || err.quotaExhausted))) throw err;
+      console.error(
+        `[Gemini] ${model} unavailable (${err.message}); ${model === models[models.length - 1] ? 'giving up' : 'trying fallback model'}.`,
+      );
     }
-  }, 3);
+  }
+  throw lastErr;
 }

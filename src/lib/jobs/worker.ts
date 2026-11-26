@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { dbRepo } from '../../db/repository.ts';
+import { rawDb } from '../../db/index.ts';
 import { STORAGE_UPLOADS_DIR, STORAGE_TMP_DIR } from '../app-paths.ts';
 import { claimNextJob, completeJob, failJob, isCancelled, recoverStaleJobs, type Job } from './queue.ts';
 import { runProcessProject, runRenderShort, runRegenerateShort, PipelineError } from '../../pipeline/pipeline.ts';
@@ -16,9 +17,22 @@ import * as store from '../studio/store.ts';
 const G = globalThis as any;
 
 /** Delete abandoned uploads (never turned into a project) and work dirs of jobs that are not running. */
-export function sweepTemporaryFiles(runningJobIds: Set<string>, maxAgeMs = 24 * 60 * 60_000) {
+export function sweepTemporaryFiles(runningJobIds: Set<string>, maxAgeMs = Number(process.env.UPLOAD_RETENTION_HOURS || 168) * 60 * 60_000) {
   const cutoff = Date.now() - maxAgeMs;
   let removed = 0;
+  // Never delete a file any project still points at (older projects kept their source inside uploads/).
+  const referenced = new Set<string>();
+  try {
+    const rows = [
+      ...(rawDb.prepare(`SELECT source_file AS p FROM projects WHERE source_file IS NOT NULL`).all() as any[]),
+      ...(rawDb.prepare(`SELECT file_path AS p FROM source_videos WHERE file_path IS NOT NULL`).all() as any[]),
+      ...(rawDb.prepare(`SELECT file_path AS p FROM media_assets`).all() as any[]),
+    ];
+    for (const r of rows) referenced.add(path.basename(String(r.p)));
+  } catch (err: any) {
+    console.error(`[Worker] Cleanup skipped: could not read referenced files (${err.message}).`);
+    return;
+  }
   for (const [dir, isDir] of [[STORAGE_UPLOADS_DIR, false], [STORAGE_TMP_DIR, true]] as const) {
     if (!fs.existsSync(dir)) continue;
     for (const name of fs.readdirSync(dir)) {
@@ -26,7 +40,7 @@ export function sweepTemporaryFiles(runningJobIds: Set<string>, maxAgeMs = 24 * 
       const p = path.join(dir, name);
       try {
         const st = fs.statSync(p);
-        if (st.mtimeMs > cutoff || (isDir && runningJobIds.has(name))) continue;
+        if (st.mtimeMs > cutoff || (isDir && runningJobIds.has(name)) || (!isDir && referenced.has(name))) continue;
         fs.rmSync(p, { recursive: true, force: true });
         removed++;
       } catch (err: any) {

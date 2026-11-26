@@ -4,7 +4,7 @@ import { dbRepo } from '../db/repository.ts';
 import { getProjectStoragePaths, STORAGE_TMP_DIR, STORAGE_UPLOADS_DIR, MUSIC_DIR } from '../lib/app-paths.ts';
 import { computeFileChecksum } from '../lib/video-ingestion.ts';
 import { probe, verifyDecodable, extractThumbnail, waveformPeaks, ffmpegWithProgress, type ProbeResult } from '../lib/media/ff.ts';
-import { inspectYouTubeVideo, acquireOwnedYouTubeVideo, AcquisitionError } from '../lib/youtube/media-source.ts';
+import { inspectYouTubeVideo, acquireYouTubeVideo, AcquisitionError } from '../lib/youtube/media-source.ts';
 import { renderEditDoc } from '../lib/render/renderer.ts';
 import { newId, totalOutputDuration, type EditDoc } from '../lib/render/edit-doc.ts';
 import { updateJobProgress, heartbeat, type Job } from '../lib/jobs/queue.ts';
@@ -128,14 +128,14 @@ export async function runProcessProject(job: Job, signal: AbortSignal, workerId:
     tracker.complete('inspecting', 'Source checked');
 
     // ---- 2. Acquire --------------------------------------------------------------------------
-    tracker.enter('acquiring', opts.sourceType === 'youtube' ? 'Fetching the video from your channel' : 'Moving the upload into the project');
+    tracker.enter('acquiring', opts.sourceType === 'youtube' ? 'Fetching the video from YouTube' : 'Moving the upload into the project');
     if (!asset || !fs.existsSync(asset.filePath)) {
       let filePath: string;
       if (opts.sourceType === 'youtube') {
         const insp = inspection && !('error' in inspection) ? inspection : null;
         if (!insp) throw new PipelineError('YouTube inspection missing.', true);
         try {
-          filePath = await acquireOwnedYouTubeVideo(insp, path.join(paths.sourceDir, `source_${insp.videoId}.mp4`), (pct) => tracker.progress(pct / 100, `Fetching video: ${Math.round(pct)}%`), signal);
+          filePath = await acquireYouTubeVideo(insp, path.join(paths.sourceDir, `source_${insp.videoId}.mp4`), (pct) => tracker.progress(pct / 100, `Fetching video: ${Math.round(pct)}%`), signal);
         } catch (err: any) {
           throw new PipelineError(err.message, err instanceof AcquisitionError ? err.retryable : true);
         }

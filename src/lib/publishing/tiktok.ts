@@ -19,7 +19,8 @@ export const tiktokService = {
 
   // Publish video to TikTok using official Content Posting API v2
   async publish(params: TikTokPublishParams): Promise<PublishResult> {
-    const { filePath, title, accessToken, privacyLevel = 'PUBLIC_TO_EVERYONE' } = params;
+    const { filePath, title, privacyLevel = 'PUBLIC_TO_EVERYONE' } = params;
+    const accessToken = params.accessToken || process.env.TIKTOK_ACCESS_TOKEN;
 
     if (!fs.existsSync(filePath)) {
       return {
@@ -100,21 +101,11 @@ export const tiktokService = {
       }
     }
 
-    // Official sandbox / verified authorization pipeline simulation
-    const simulatedPublishId = `tt_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
-    const publishedUrl = `https://www.tiktok.com/@gta6_daily_shorts/video/${simulatedPublishId}`;
-
+    // Previously this returned a fabricated "success" with an invented post URL. Fail honestly instead.
     return {
-      success: true,
+      success: false,
       platform: 'tiktok',
-      platformPostId: simulatedPublishId,
-      publishedUrl,
-      details: {
-        mode: 'authenticated_tiktok_v2_api',
-        privacyLevel,
-        duetAllowed: true,
-        commercialUseCleared: true,
-      },
+      error: 'TikTok is not connected (no TIKTOK_ACCESS_TOKEN). Nothing was published.',
     };
   },
 };

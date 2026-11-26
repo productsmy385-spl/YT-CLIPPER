@@ -9,4 +9,6 @@ if (process.env.WORKER_DISABLED === 'true') {
   console.log('[Startup] WORKER_DISABLED=true: this process will not run background jobs.');
 } else {
   startWorker();
+  const { publishingScheduler } = await import('./lib/publishing/scheduler');
+  publishingScheduler.startDaemon(Number(process.env.SCHEDULER_INTERVAL_SECONDS || 30) * 1000);
 }

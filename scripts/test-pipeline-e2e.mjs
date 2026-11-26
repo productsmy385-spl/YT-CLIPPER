@@ -7,7 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 const video = process.argv[2];
-if (!video || !fs.existsSync(video)) { console.error('usage: node scripts/test-pipeline-e2e.mjs <video-file>'); process.exit(2); }
+const isUrl = /^https?:\/\//.test(video || '');
+if (!video || (!isUrl && !fs.existsSync(video))) { console.error('usage: node scripts/test-pipeline-e2e.mjs <video-file | youtube-url>'); process.exit(2); }
 
 // Load .env for API keys, but never the production DATABASE_URL.
 if (fs.existsSync('.env')) {
@@ -50,12 +51,20 @@ async function waitJob(id, label) {
 startWorker({ concurrency: 1 });
 
 // 1. Upload (copy into uploads dir as the upload API would)
-const uploadName = `test_${Date.now()}${path.extname(video)}`;
-fs.copyFileSync(video, path.join(STORAGE_UPLOADS_DIR, uploadName));
 const projectId = `proj_e2e_${Date.now()}`;
-dbRepo.createProject({ id: projectId, title: 'E2E test', sourceFile: uploadName });
+const common = { durations: [30], maxShorts: 3, aspect: '9:16', captionPreset: 'bold_pop', removeDeadAir: true };
+let payload;
+if (isUrl) {
+  dbRepo.createProject({ id: projectId, title: 'E2E YouTube test', sourceUrl: video });
+  payload = { sourceType: 'youtube', sourceUrl: video, ...common };
+} else {
+  const uploadName = `test_${Date.now()}${path.extname(video)}`;
+  fs.copyFileSync(video, path.join(STORAGE_UPLOADS_DIR, uploadName));
+  dbRepo.createProject({ id: projectId, title: 'E2E test', sourceFile: uploadName });
+  payload = { sourceType: 'upload', uploadFile: uploadName, ...common };
+}
 const t0 = Date.now();
-const job = enqueueJob({ type: 'process_project', projectId, payload: { sourceType: 'upload', uploadFile: uploadName, durations: [30], maxShorts: 3, aspect: '9:16', captionPreset: 'bold_pop', removeDeadAir: true } });
+const job = enqueueJob({ type: 'process_project', projectId, payload });
 const done = await waitJob(job.id, 'process');
 check('Pipeline job completed', done.status === 'completed', done.error || done.message);
 console.log(`  took ${((Date.now() - t0) / 1000).toFixed(0)}s`);
@@ -116,7 +125,7 @@ if (ready[0]) {
 
 // 4. Corrupted input is rejected with a clear message
 const badName = `bad_${Date.now()}.mp4`;
-const buf = fs.readFileSync(video).subarray(0, 200_000);
+const buf = isUrl ? Buffer.from('not a video at all, just bytes'.repeat(1000)) : fs.readFileSync(video).subarray(0, 200_000);
 fs.writeFileSync(path.join(STORAGE_UPLOADS_DIR, badName), buf);
 const badProject = `proj_bad_${Date.now()}`;
 dbRepo.createProject({ id: badProject, title: 'Bad', sourceFile: badName });

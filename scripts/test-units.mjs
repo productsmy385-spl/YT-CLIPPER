@@ -6,7 +6,7 @@ import { totalOutputDuration, sourceToOutput, outputToSource, cuesOnOutput, vali
 import { removeDeadAir } from '../src/pipeline/agents/shorts-generation-agent.ts';
 import { buildCues, validateCueTiming } from '../src/pipeline/agents/caption-agent.ts';
 import { snapBoundaries, excitementCurve } from '../src/pipeline/agents/highlight-detection-agent.ts';
-import { wordsFromSegment } from '../src/pipeline/agents/audio-intelligence-agent.ts';
+import { wordsFromSegment, cleanTranscriptText } from '../src/pipeline/agents/audio-intelligence-agent.ts';
 import { isAuthorized } from '../src/lib/auth-gate.ts';
 import { buildAss } from '../src/lib/render/ass.ts';
 
@@ -96,4 +96,21 @@ test('auth gate', () => {
   assert.equal(isAuthorized('Basic ' + btoa('any:s3cret')), true);
   assert.equal(isAuthorized('Basic ' + btoa('any:wrong!')), false);
   delete process.env.APP_PASSWORD;
+});
+test('regression: overlapping/out-of-order Gemini segments produce valid sequential cues', () => {
+  const mk = (s, e, t) => ({ start: s, end: e, text: t, words: wordsFromSegment(s, e, t) });
+  const tr = [mk(20, 24.4, 'చుట్టు చీర కట్టిన'), mk(24.2, 28.4, 'రోజు సొంగ'), mk(0.02, 0.6, 'అమ్మో'), mk(0, 0.56, 'ఏంటి')];
+  const cues = buildCues(tr, 0, 30, []);
+  validateCueTiming(cues, 0, 30);
+  for (let i = 0; i < cues.length; i++) {
+    assert.ok(cues[i].end - cues[i].start >= 0.1, `cue ${i} has length`);
+    if (i) assert.ok(cues[i].start >= cues[i - 1].end - 1e-9, `cue ${i} starts after previous ends`);
+  }
+});
+test('regression: sound labels are stripped from non-Latin transcripts', () => {
+  assert.equal(cleanTranscriptText('laughter రోజు'), 'రోజు');
+  assert.equal(cleanTranscriptText('అమ్మో! (crash) చూడు'), 'అమ్మో! చూడు');
+  assert.equal(cleanTranscriptText('watch that crash'), 'watch that crash');
+  assert.equal(cleanTranscriptText('laughter'), '');
+  assert.equal(cleanTranscriptText('Crash!'), '');
 });

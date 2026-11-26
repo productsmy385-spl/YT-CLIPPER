@@ -2,7 +2,7 @@
 
 import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CheckCircle2, Circle, Loader2, XCircle, RefreshCw, StopCircle, Download, Scissors, Wand2, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Circle, Loader2, XCircle, RefreshCw, StopCircle, Download, Scissors, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { STAGES, DURATION_PRESETS } from '@/pipeline/stages';
 

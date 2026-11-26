@@ -21,19 +21,6 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
             {children}
           </div>
 
-          {/* Clean Footer */}
-          <footer className="mt-12 border-t border-border pt-6 pb-8 text-center text-2xs text-muted-foreground">
-            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-foreground">GTA 6 Shorts AI Studio</span>
-                <span>•</span>
-                <span>100% Authorized & Certified Content Pipeline</span>
-              </div>
-              <div>
-                Zero DRM Circumvention • 1080×1920 60FPS FFmpeg Engine • Autonomous Video Composition
-              </div>
-            </div>
-          </footer>
         </main>
       </div>
     </div>

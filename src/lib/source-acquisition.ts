@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { ffmpegCore } from './ffmpeg-core.ts';
 import { computeFileChecksum, videoIngestionEngine } from './video-ingestion.ts';
-import { rightsEngine, type RightsValidationResult } from './rights-engine.ts';
+import { type RightsValidationResult } from './rights-engine.ts';
+import { inspectYouTubeVideo, acquireOwnedYouTubeVideo, AcquisitionError } from './youtube/media-source.ts';
 import { AUTHORIZED_SOURCES_DIR, STORAGE_DOWNLOADS_DIR, getProjectStoragePaths } from './app-paths.ts';
 import { dbRepo } from '../db/repository.ts';
 
@@ -345,210 +346,100 @@ export class MediaAcquisitionService {
     }
 
     // -------------------------------------------------------------------------
-    // 4. YOUTUBE URL PATHWAY (APPROVED & AUTHORIZED MEDIA SOURCES)
+    // 4. YOUTUBE URL PATHWAY: only videos owned by the connected channel are fetched (see youtube/media-source.ts)
     // -------------------------------------------------------------------------
-    const parsedYt = videoIngestionEngine.parseYouTubeUrl(sourceUrl);
-    const resolvedVideoId = videoId || parsedYt.videoId;
-
-    if (!parsedYt.isValid || !resolvedVideoId) {
-      return {
-        sourceType: 'youtube',
-        sourceUrl,
-        acquisitionStatus: 'failed',
-        error: 'Invalid YouTube video URL format. Supported formats: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/shorts/ID.',
-        canRetry: false,
-      };
+    const inspection = await inspectYouTubeVideo(sourceUrl);
+    if ('error' in inspection) {
+      return { sourceType: 'youtube', sourceUrl, acquisitionStatus: 'failed', error: inspection.error, canRetry: false };
     }
 
-    console.log(`[MediaAcquisitionService] Resolving authorized media source for YouTube video: ${resolvedVideoId}...`);
+    // A. A recording of this video already placed in the server's source repository by the operator.
+    const existingFile = videoIngestionEngine.findAuthorizedSourceFile(inspection.videoId);
+    let acquiredPath: string | null = existingFile && fs.existsSync(existingFile) ? existingFile : null;
+    let provider = 'authorized_media_repository';
 
-    // A. Check local authorized disk repository (e.g. registered master recording for this stream)
-    const existingFile = videoIngestionEngine.findAuthorizedSourceFile(resolvedVideoId);
-    if (existingFile && fs.existsSync(existingFile)) {
+    // B. The connected channel owns the video: fetch it.
+    if (!acquiredPath) {
+      if (!inspection.canAcquire) {
+        return {
+          sourceType: 'youtube',
+          sourceUrl,
+          videoId: inspection.videoId,
+          acquisitionStatus: 'failed',
+          error: inspection.message,
+          canRetry: inspection.blocker === 'REAUTH_REQUIRED' || inspection.blocker === 'NOT_CONNECTED',
+          availableAlternatives: ['upload'],
+        };
+      }
       try {
-        fs.copyFileSync(existingFile, targetSourcePath);
-        const meta = ffmpegCore.probe(targetSourcePath);
-        const checksum = computeFileChecksum(targetSourcePath);
-
-        return {
-          sourceType: 'youtube',
-          sourceUrl,
-          videoId: resolvedVideoId,
-          filePath: targetSourcePath,
-          storageKey: `projects/${projectId}/source/${path.basename(targetSourcePath)}`,
-          acquisitionStatus: 'ready',
-          provider: 'authorized_media_repository',
-          authorizationReference: `disk_repository:${path.basename(existingFile)}`,
-          metadata: {
-            duration: meta.duration,
-            width: meta.width,
-            height: meta.height,
-            fps: meta.fps,
-            bitrate: meta.bitrate,
-            hasAudio: meta.hasAudio,
-            audioChannels: meta.audioChannels,
-            audioCodec: meta.audioCodec,
-            codec: meta.codec,
-            fileSize: fs.statSync(targetSourcePath).size,
-            checksum,
-          },
-        };
+        acquiredPath = await acquireOwnedYouTubeVideo(inspection, path.join(storagePaths.sourceDir, `${projectId}_yt_${inspection.videoId}.mp4`), () => {}, params.signal);
+        provider = 'owned_channel_youtube';
       } catch (err: any) {
-        console.warn(`[MediaAcquisitionService] Note on local authorized copy:`, err.message);
-      }
-    }
-
-    // B. Check documented creator permission / partner agreements on file
-    const rights = await rightsEngine.checkSourceRights({
-      videoId: resolvedVideoId,
-      sourceUrl,
-      creatorName,
-      projectId,
-    });
-
-    if (rights.status === 'VERIFIED' && rights.isAllowed) {
-      // Look for authorized partner file
-      const partnerFile = videoIngestionEngine.findAuthorizedSourceFile(resolvedVideoId);
-      if (partnerFile && fs.existsSync(partnerFile)) {
-        fs.copyFileSync(partnerFile, targetSourcePath);
-        const meta = ffmpegCore.probe(targetSourcePath);
-        const checksum = computeFileChecksum(targetSourcePath);
-
         return {
           sourceType: 'youtube',
           sourceUrl,
-          videoId: resolvedVideoId,
-          filePath: targetSourcePath,
-          acquisitionStatus: 'ready',
-          provider: 'creator_partner_feed',
-          authorizationReference: `creator_agreement:${rights.creatorName}`,
-          metadata: {
-            duration: meta.duration,
-            width: meta.width,
-            height: meta.height,
-            fps: meta.fps,
-            hasAudio: meta.hasAudio,
-            checksum,
-          },
+          videoId: inspection.videoId,
+          acquisitionStatus: 'failed',
+          error: err.message,
+          canRetry: err instanceof AcquisitionError ? err.retryable : true,
+          availableAlternatives: ['upload'],
         };
       }
     }
 
-    // C. Check Creative Commons (CC BY) verified archive stream
-    if (rights.status === 'CREATIVE_COMMONS' && rights.isAllowed) {
-      console.log(`[MediaAcquisitionService] Ingesting Creative Commons stream for ${resolvedVideoId}...`);
-      const ccFile = await videoIngestionEngine.acquireYouTubeStream(resolvedVideoId, sourceUrl, false, { maxDurationSeconds: 120 });
-      if (ccFile && fs.existsSync(ccFile)) {
-        fs.copyFileSync(ccFile, targetSourcePath);
-        const meta = ffmpegCore.probe(targetSourcePath);
-        const checksum = computeFileChecksum(targetSourcePath);
-
-        return {
-          sourceType: 'youtube',
-          sourceUrl,
-          videoId: resolvedVideoId,
-          filePath: targetSourcePath,
-          acquisitionStatus: 'ready',
-          provider: 'creative_commons_stream',
-          authorizationReference: 'cc_by_4.0_license',
-          metadata: {
-            duration: meta.duration,
-            width: meta.width,
-            height: meta.height,
-            fps: meta.fps,
-            hasAudio: meta.hasAudio,
-            checksum,
-          },
-        };
-      }
+    if (path.resolve(acquiredPath) !== path.resolve(targetSourcePath)) fs.copyFileSync(acquiredPath, targetSourcePath);
+    const meta = ffmpegCore.probe(targetSourcePath);
+    if (!meta || meta.duration <= 0) {
+      return { sourceType: 'youtube', sourceUrl, videoId: inspection.videoId, acquisitionStatus: 'failed', error: 'The fetched file is not a playable video.', canRetry: true };
     }
-
-    // D. Technical Error: The YouTube video is not available via an authorized source
-    // In accordance with YouTube API policies, YouTube Data API returns metadata only and does not supply downloadable video bytes.
-    const technicalError = `Media acquisition failed for YouTube video (${resolvedVideoId}): The YouTube Data API provides video metadata only and does not supply downloadable audiovisual content. To extract AI Shorts, an authorized media stream, partner feed, or direct recording must be available for this video.`;
-
     return {
       sourceType: 'youtube',
       sourceUrl,
-      videoId: resolvedVideoId,
-      acquisitionStatus: 'failed',
-      error: technicalError,
-      canRetry: true,
-      availableAlternatives: ['direct_url', 'upload'],
+      videoId: inspection.videoId,
+      filePath: targetSourcePath,
+      storageKey: `projects/${projectId}/source/${path.basename(targetSourcePath)}`,
+      acquisitionStatus: 'ready',
+      provider,
+      authorizationReference: provider === 'owned_channel_youtube' ? `channel:${inspection.channelId}` : `disk_repository:${path.basename(acquiredPath)}`,
+      metadata: {
+        duration: meta.duration,
+        width: meta.width,
+        height: meta.height,
+        fps: meta.fps,
+        bitrate: meta.bitrate,
+        hasAudio: meta.hasAudio,
+        audioChannels: meta.audioChannels,
+        audioCodec: meta.audioCodec,
+        codec: meta.codec,
+        fileSize: fs.statSync(targetSourcePath).size,
+        checksum: computeFileChecksum(targetSourcePath),
+      },
     };
   }
 
   /**
-   * Pre-flight availability check for UI rendering
+   * Truthful pre-flight check for the UI: says whether media can actually be acquired, not merely whether
+   * metadata exists.
    */
-  async checkAcquisitionAvailability(params: {
-    videoId: string;
-    sourceUrl?: string;
-    channelId?: string;
-    creatorName?: string;
-    rights?: RightsValidationResult;
-  }): Promise<AcquisitionAvailability> {
-    const { videoId, sourceUrl, channelId, creatorName } = params;
-
-    // Direct MP4 check
-    if (sourceUrl && (sourceUrl.endsWith('.mp4') || sourceUrl.endsWith('.mov') || sourceUrl.endsWith('.webm'))) {
-      return {
-        isAvailable: true,
-        providerName: 'Direct Media Stream',
-        providerType: 'direct_url',
-        reason: 'Direct MP4/MOV streaming URL is available for immediate acquisition.',
-        canAcquireDirectly: true,
-        availableActions: ['START_PIPELINE', 'ACQUIRE_MEDIA'],
-      };
-    }
-
-    // Check disk repository
-    const existing = videoIngestionEngine.findAuthorizedSourceFile(videoId);
+  async checkAcquisitionAvailability(params: { videoId: string; sourceUrl?: string }): Promise<AcquisitionAvailability> {
+    const existing = videoIngestionEngine.findAuthorizedSourceFile(params.videoId);
     if (existing && fs.existsSync(existing)) {
       return {
         isAvailable: true,
-        providerName: 'Authorized Media Repository',
+        providerName: 'Server media repository',
         providerType: 'licensed_repository',
-        reason: 'Authorized recording found in local media repository.',
+        reason: 'A recording of this video is already on the server.',
         canAcquireDirectly: true,
-        availableActions: ['START_PIPELINE', 'ACQUIRE_MEDIA'],
+        availableActions: ['START_PIPELINE'],
       };
     }
-
-    const rights = params.rights || (await rightsEngine.checkSourceRights({ videoId, sourceUrl, channelId, creatorName }));
-
-    if (rights.status === 'VERIFIED' && rights.isAllowed) {
-      return {
-        isAvailable: true,
-        providerName: 'Creator Partner Media Feed',
-        providerType: 'partner_feed',
-        rights,
-        reason: `Documented creator authorization on file for ${rights.creatorName || 'creator'}.`,
-        canAcquireDirectly: true,
-        availableActions: ['START_PIPELINE', 'ACQUIRE_MEDIA'],
-      };
+    const inspection = await inspectYouTubeVideo(params.sourceUrl || `https://www.youtube.com/watch?v=${params.videoId}`);
+    if ('error' in inspection) {
+      return { isAvailable: false, providerType: 'none', reason: inspection.error, canAcquireDirectly: false, availableActions: ['UPLOAD_FILE'] };
     }
-
-    if (rights.status === 'CREATIVE_COMMONS' && rights.isAllowed) {
-      return {
-        isAvailable: true,
-        providerName: 'Creative Commons Stream Acquirer',
-        providerType: 'creative_commons_stream',
-        rights,
-        reason: 'Verified Creative Commons CC BY repository.',
-        canAcquireDirectly: true,
-        availableActions: ['START_PIPELINE', 'ACQUIRE_MEDIA'],
-      };
-    }
-
-    return {
-      isAvailable: false,
-      providerType: 'none',
-      rights,
-      reason: `The YouTube Data API provides metadata only and does not provide downloadable video bytes. Creator "${creatorName || 'Partner'}" has not registered an automated media stream on file.`,
-      canAcquireDirectly: false,
-      availableActions: ['UPLOAD_FILE', 'REGISTER_CREATOR'],
-    };
+    return inspection.canAcquire
+      ? { isAvailable: true, providerName: 'Your YouTube channel', providerType: 'partner_feed', reason: 'This video is on your connected channel.', canAcquireDirectly: true, availableActions: ['START_PIPELINE'] }
+      : { isAvailable: false, providerType: 'none', reason: inspection.message || 'This video cannot be fetched.', canAcquireDirectly: false, availableActions: ['UPLOAD_FILE'] };
   }
 
   /**

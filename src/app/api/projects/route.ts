@@ -1,12 +1,12 @@
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { dbRepo } from '@/db/repository';
-import { MasterAgentOrchestrator } from '@/agents/orchestrator';
-import { videoIngestionEngine, computeFileChecksum } from '@/lib/video-ingestion';
+import { rawDb } from '@/db/index';
 import { mediaManager } from '@/lib/media-manager';
-import { getProjectStoragePaths } from '@/lib/app-paths';
-import { ffmpegCore } from '@/lib/ffmpeg-core';
-import { sourceAcquisitionEngine, mediaAcquisitionService } from '@/lib/source-acquisition';
+import { STORAGE_UPLOADS_DIR } from '@/lib/app-paths';
+import { inspectYouTubeVideo } from '@/lib/youtube/media-source';
+import { enqueueJob } from '@/lib/jobs/queue';
+import { STAGES } from '@/pipeline/stages';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -36,237 +36,60 @@ export async function GET(req: NextRequest) {
   }
 }
 
+
+/**
+ * Create a project from a YouTube link (owned by the connected channel) or a completed upload, and queue the
+ * processing job. Returns immediately; progress is streamed from /api/projects/[id]/events.
+ * Body: { source: { type: 'youtube', url } | { type: 'upload', uploadId, fileName? }, options?: {...} }
+ */
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const sourceUrl = body.sourceUrl || body.url;
-    const sourceFile = body.sourceFile || body.file;
-    const title = body.title;
-    const pairAuthorizedStream = body.pairAuthorizedStream;
+    const src = body?.source;
+    if (!src || (src.type !== 'youtube' && src.type !== 'upload')) {
+      return NextResponse.json({ error: 'Provide a YouTube link or upload a video.' }, { status: 400 });
+    }
+    const o = body.options || {};
+    let durations: number[] = Array.isArray(o.durations) ? o.durations.map(Number).filter((d: number) => d >= 5 && d <= 180) : [30];
+    if (!durations.length) durations = [30];
+    durations = [...new Set(durations.map((d) => Math.round(d)))].slice(0, 5);
+    const options = {
+      durations,
+      maxShorts: Math.max(1, Math.min(10, Number(o.maxShorts) || 5)),
+      aspect: ['9:16', '16:9', '1:1'].includes(o.aspect) ? o.aspect : '9:16',
+      captionPreset: typeof o.captionPreset === 'string' ? o.captionPreset : 'bold_pop',
+      removeDeadAir: o.removeDeadAir !== false,
+    };
 
-    // Fast-fail validation on malformed YouTube URLs
-    if (sourceUrl && typeof sourceUrl === 'string') {
-      const parsedYt = videoIngestionEngine.parseYouTubeUrl(sourceUrl);
-      if (!parsedYt.isValid) {
-        return NextResponse.json(
-          {
-            error: 'Invalid YouTube video URL format. Supported formats: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/live/ID, youtube.com/shorts/ID.',
-            errorState: 'INVALID_YOUTUBE_URL',
-            stageId: '1',
-            message: 'Invalid YouTube video URL format. Supported formats: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/live/ID, youtube.com/shorts/ID.',
-          },
-          { status: 422 }
-        );
+    let title: string;
+    let payload: any;
+    if (src.type === 'youtube') {
+      const insp = await inspectYouTubeVideo(String(src.url || ''));
+      if ('error' in insp) return NextResponse.json({ error: insp.error }, { status: 422 });
+      if (!insp.canAcquire) return NextResponse.json({ error: insp.message, blocker: insp.blocker }, { status: 422 });
+      title = insp.title;
+      payload = { sourceType: 'youtube', sourceUrl: insp.url, ...options };
+    } else {
+      const uploadId = path.basename(String(src.uploadId || ''));
+      if (!uploadId || !fs.existsSync(path.join(STORAGE_UPLOADS_DIR, uploadId))) {
+        return NextResponse.json({ error: 'That upload was not found on the server. Upload the file again.' }, { status: 422 });
       }
-    }
-
-    if (!sourceUrl && !sourceFile) {
-      return NextResponse.json(
-        {
-          error: 'Please provide either a valid YouTube URL or an uploaded video file.',
-          errorState: 'SOURCE_PERMISSION_MISSING',
-        },
-        { status: 422 }
-      );
-    }
-
-    // ================= DUPLICATE QUEUE JOB PREVENTION =================
-    // If a project is actively in-progress with the identical source file within recent heartbeat window, return it (idempotency)
-    const activeProjects = dbRepo.listProjects() as any[];
-    const nowMs = Date.now();
-    const existingActive = activeProjects.find((p) => {
-      const sameSource = sourceFile ? p.source_file === sourceFile : (sourceUrl && p.source_url === sourceUrl);
-      if (!sameSource) return false;
-      if (p.status !== 'in_progress') return false;
-      const lastActivity = new Date(p.heartbeat_at || p.updated_at || p.created_at).getTime();
-      return (nowMs - lastActivity) < 60000; // genuinely active within last 60 seconds
-    });
-
-    if (existingActive) {
-      console.log(`[ProjectsAPI] Project ${existingActive.id} is already in progress for this source. Returning active project (idempotent).`);
-      return NextResponse.json({
-        success: true,
-        projectId: existingActive.id,
-        status: existingActive.status,
-        progress: existingActive.progress || 5,
-        currentStage: existingActive.current_stage || 'Validating source link',
-        message: 'Existing project workflow resumed.',
-        resumed: true,
-      });
-    }
-
-    // Validate local source file if supplied
-    if (sourceFile && !fs.existsSync(sourceFile)) {
-      return NextResponse.json(
-        {
-          error: `The specified source video file does not exist on disk: ${sourceFile}`,
-          errorState: 'SOURCE_PROCESSING_FAILED',
-        },
-        { status: 422 }
-      );
+      title = String(src.fileName || uploadId.replace(/^\d+_[0-9a-f]{8}_/, '')).replace(/\.[^.]+$/, '').slice(0, 120) || 'Uploaded video';
+      payload = { sourceType: 'upload', uploadFile: uploadId, ...options };
     }
 
     const projectId = `proj_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const sourceVideoId = `sv_${projectId}`;
-
-    // Acquire source video via unified MediaAcquisitionService
-    const mediaRes = await mediaAcquisitionService.acquireMedia({
-      sourceUrl,
-      sourceFile,
-      projectId,
-      creatorName: body.creatorName,
-    });
-
-    if (mediaRes.acquisitionStatus === 'failed' || !mediaRes.filePath || !fs.existsSync(mediaRes.filePath)) {
-      console.warn(`[ProjectsAPI] Media acquisition failed for project ${projectId}: ${mediaRes.error}`);
-      return NextResponse.json(
-        {
-          error: mediaRes.error || 'Media acquisition failed.',
-          errorState: 'VIDEO_ACQUISITION_FAILED',
-          sourceType: mediaRes.sourceType,
-          videoId: mediaRes.videoId,
-          canRetry: mediaRes.canRetry ?? true,
-          availableAlternatives: mediaRes.availableAlternatives || ['upload', 'direct_url'],
-          metadataRetrieved: Boolean(sourceUrl),
-          videoAcquired: false,
-        },
-        { status: 422 }
-      );
+    dbRepo.createProject({ id: projectId, userId: 'usr_creator_01', title, sourceUrl: payload.sourceUrl, sourceFile: payload.uploadFile });
+    rawDb.prepare(`UPDATE projects SET source_type = ?, settings_json = ? WHERE id = ?`).run(src.type, JSON.stringify(options), projectId);
+    for (const s of STAGES) {
+      dbRepo.savePipelineStage({ projectId, stageNumber: s.n, stageKey: s.key, stageName: s.name, status: 'PENDING', progressPercent: 0 });
     }
-
-    const projectIsolatedSourcePath = mediaRes.filePath;
-    const sourceChecksum = mediaRes.metadata?.checksum || computeFileChecksum(projectIsolatedSourcePath);
-
-    try {
-      fs.accessSync(projectIsolatedSourcePath, fs.constants.R_OK);
-    } catch (permErr: any) {
-      return NextResponse.json(
-        {
-          error: `Source video file cannot be read: ${permErr.message}`,
-          errorState: 'SOURCE_FILE_UNREADABLE',
-        },
-        { status: 422 }
-      );
-    }
-
-    let probeMeta: any = mediaRes.metadata;
-    if (!probeMeta || !probeMeta.duration) {
-      try {
-        probeMeta = ffmpegCore.probe(projectIsolatedSourcePath);
-      } catch (probeErr: any) {
-        return NextResponse.json(
-          {
-            error: `Failed to probe source video container: ${probeErr.message}`,
-            errorState: 'SOURCE_PROCESSING_FAILED',
-          },
-          { status: 422 }
-        );
-      }
-    }
-
-    if (!probeMeta || probeMeta.duration <= 0) {
-      return NextResponse.json(
-        {
-          error: 'Source video contains 0 seconds duration or corrupted stream.',
-          errorState: 'UNSUPPORTED_FORMAT',
-        },
-        { status: 422 }
-      );
-    }
-
-    const parsedYt = sourceUrl ? videoIngestionEngine.parseYouTubeUrl(sourceUrl) : null;
-    const projectTitle = title || (parsedYt?.videoId ? `GTA 6 Gameplay (${parsedYt.videoId})` : 'GTA 6 Gameplay Shorts');
-
-    dbRepo.createProject({
-      id: projectId,
-      userId: 'usr_creator_01',
-      title: projectTitle,
-      sourceUrl: sourceUrl || null,
-      sourceFile: projectIsolatedSourcePath,
-      sourceVideoId,
-      sourceChecksum,
-    });
-
-    dbRepo.saveSourceVideo({
-      id: sourceVideoId,
-      projectId,
-      fileName: path.basename(projectIsolatedSourcePath),
-      filePath: projectIsolatedSourcePath,
-      fileSize: fs.statSync(projectIsolatedSourcePath).size,
-      duration: probeMeta.duration,
-      width: probeMeta.width,
-      height: probeMeta.height,
-      fps: probeMeta.fps,
-      bitrate: probeMeta.bitrate,
-      audioChannels: probeMeta.audioChannels,
-      originSource: sourceUrl ? (mediaRes.sourceType === 'direct_url' ? 'direct_url' : 'youtube_stream') : 'local_upload',
-      sha256Checksum: sourceChecksum,
-    });
-
-    // 3. Initialize all 10 stages in database matching MasterAgentOrchestrator
-    const stages = [
-      { num: 1, key: 'inspecting', name: 'Inspecting URL' },
-      { num: 2, key: 'metadata', name: 'Metadata Retrieved' },
-      { num: 3, key: 'acquiring', name: 'Acquiring Media' },
-      { num: 4, key: 'validating_media', name: 'Validating Media' },
-      { num: 5, key: 'extracting_audio', name: 'Extracting Audio & Scenes' },
-      { num: 6, key: 'highlights', name: 'Detecting Highlights' },
-      { num: 7, key: 'extracting', name: 'Extracting Clips' },
-      { num: 8, key: 'generating_shorts', name: 'Generating Shorts & Subtitles' },
-      { num: 9, key: 'rendering_videos', name: 'Rendering Videos' },
-      { num: 10, key: 'completed', name: 'Completed' },
-    ];
-
-    stages.forEach((stg) => {
-      dbRepo.savePipelineStage({
-        projectId,
-        stageNumber: stg.num,
-        stageKey: stg.key,
-        stageName: stg.name,
-        status: stg.num === 1 ? 'ACTIVE' : 'PENDING',
-        progressPercent: stg.num === 1 ? 2 : 0,
-        startedAt: stg.num === 1 ? new Date().toISOString() : undefined,
-      });
-    });
-
-    // 4. Mark project in_progress at Stage 1
-    dbRepo.updateProjectStatus(projectId, 'in_progress', 2, 'Inspecting URL', {
-      stageId: '1',
-      stageStatus: 'ACTIVE',
-    });
-
-    // 5. Asynchronously launch background orchestrator (never blocks the HTTP response)
-    const orchestrator = new MasterAgentOrchestrator();
-    const jobId = `job_${projectId}`;
-
-    setTimeout(() => {
-      orchestrator.processProject({
-        projectId,
-        sourceVideoId,
-        sourceFilePath: projectIsolatedSourcePath,
-        sourceChecksum,
-        sourceUrl,
-        jobId,
-      }).catch((err) => {
-        console.error(`[ProjectsAPI] Background orchestrator execution failed for ${projectId}:`, err);
-      });
-    }, 20);
-
-    // 6. Immediate response to client (<100ms) with clean status and ID
-    return NextResponse.json({
-      success: true,
-      projectId,
-      status: 'in_progress',
-      progress: 2,
-      currentStage: 'Inspecting URL',
-      sourceVideoId,
-      sourceChecksum,
-      jobId,
-      message: 'Video source successfully queued. 10-stage multi-agent editing pipeline initiated.',
-    });
+    dbRepo.updateProjectStatus(projectId, 'in_progress', 0, 'Queued', { stageId: '1', stageStatus: 'PENDING' });
+    const job = enqueueJob({ type: 'process_project', projectId, payload, maxAttempts: 2 });
+    return NextResponse.json({ success: true, projectId, jobId: job.id });
   } catch (error: any) {
-    console.error('[ProjectsAPI] Initiation error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('[ProjectsAPI] Create failed:', error);
+    return NextResponse.json({ error: 'Could not start processing. Please try again.' }, { status: 500 });
   }
 }
 

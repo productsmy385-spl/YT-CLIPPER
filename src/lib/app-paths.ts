@@ -6,23 +6,27 @@ export const APP_ROOT = fs.existsSync(path.resolve(process.cwd(), 'src', 'db'))
   ? process.cwd()
   : path.resolve(process.cwd(), 'gta6-shorts-ai');
 
-export const STORAGE_DIR = path.resolve(APP_ROOT, 'storage');
-export const STORAGE_PROJECTS_DIR = path.resolve(APP_ROOT, 'storage', 'projects');
-export const STORAGE_CLIPS_DIR = path.resolve(APP_ROOT, 'storage', 'clips');
-export const STORAGE_EXPORTS_DIR = path.resolve(APP_ROOT, 'storage', 'exports');
-export const STORAGE_UPLOADS_DIR = path.resolve(APP_ROOT, 'storage', 'uploads');
-export const STORAGE_DOWNLOADS_DIR = path.resolve(APP_ROOT, 'storage', 'downloads');
-export const STORAGE_AVATARS_DIR = path.resolve(APP_ROOT, 'storage', 'avatars');
-export const AUTHORIZED_SOURCES_DIR = path.resolve(APP_ROOT, 'storage', 'authorized_sources');
+// Media must live on persistent disk. On Railway attach a volume mounted at /app/storage (the default below),
+// or point STORAGE_DIR at the volume mount path.
+export const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || path.resolve(APP_ROOT, 'storage'));
+export const STORAGE_PROJECTS_DIR = path.resolve(STORAGE_DIR, 'projects');
+export const STORAGE_CLIPS_DIR = path.resolve(STORAGE_DIR, 'clips');
+export const STORAGE_EXPORTS_DIR = path.resolve(STORAGE_DIR, 'exports');
+export const STORAGE_UPLOADS_DIR = path.resolve(STORAGE_DIR, 'uploads');
+export const STORAGE_DOWNLOADS_DIR = path.resolve(STORAGE_DIR, 'downloads');
+export const STORAGE_AVATARS_DIR = path.resolve(STORAGE_DIR, 'avatars');
+export const STORAGE_TMP_DIR = path.resolve(STORAGE_DIR, 'tmp');
+export const AUTHORIZED_SOURCES_DIR = path.resolve(STORAGE_DIR, 'authorized_sources');
 export const PUBLIC_DIR = path.resolve(APP_ROOT, 'public');
 export const SFX_DIR = path.resolve(PUBLIC_DIR, 'assets', 'sfx');
 export const MEMES_DIR = path.resolve(PUBLIC_DIR, 'assets', 'memes');
 export const MUSIC_DIR = path.resolve(PUBLIC_DIR, 'assets', 'music');
 export const SAMPLES_DIR = path.resolve(PUBLIC_DIR, 'samples');
-export const DB_PATH = path.resolve(STORAGE_DIR, 'gta6_shorts.db');
+export const DB_PATH = path.resolve(process.env.SQLITE_PATH || path.resolve(STORAGE_DIR, 'gta6_shorts.db'));
 
 // Ensure necessary directories exist
 fs.mkdirSync(STORAGE_DIR, { recursive: true });
+fs.mkdirSync(STORAGE_TMP_DIR, { recursive: true });
 fs.mkdirSync(STORAGE_PROJECTS_DIR, { recursive: true });
 fs.mkdirSync(STORAGE_CLIPS_DIR, { recursive: true });
 fs.mkdirSync(STORAGE_EXPORTS_DIR, { recursive: true });

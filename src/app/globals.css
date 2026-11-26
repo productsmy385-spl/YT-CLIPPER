@@ -165,3 +165,18 @@
 .gradient-warning {
   background: linear-gradient(135deg, #ffc2b4 0%, #ff8882 100%);
 }
+
+/* Caption fonts (OFL, bundled in /public/fonts) - the same files FFmpeg/libass uses when rendering. */
+@font-face { font-family: 'Poppins ExtraBold'; src: url('/fonts/Poppins-ExtraBold.ttf') format('truetype'); font-display: swap; }
+@font-face { font-family: 'Poppins'; src: url('/fonts/Poppins-Bold.ttf') format('truetype'); font-weight: 700; font-display: swap; }
+@font-face { font-family: 'Anton'; src: url('/fonts/Anton-Regular.ttf') format('truetype'); font-display: swap; }
+@font-face { font-family: 'Bebas Neue'; src: url('/fonts/BebasNeue-Regular.ttf') format('truetype'); font-display: swap; }
+@font-face { font-family: 'Bangers'; src: url('/fonts/Bangers-Regular.ttf') format('truetype'); font-display: swap; }
+
+@layer components {
+  .input {
+    @apply w-full rounded-md border bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/40;
+  }
+}
+@font-face { font-family: 'Noto Sans Telugu'; src: url('/fonts/NotoSansTelugu.ttf') format('truetype'); font-display: swap; }
+@font-face { font-family: 'Noto Sans Devanagari'; src: url('/fonts/NotoSansDevanagari.ttf') format('truetype'); font-display: swap; }

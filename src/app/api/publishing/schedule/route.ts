@@ -59,17 +59,15 @@ export async function POST(req: NextRequest) {
     if (!accountId) {
       const accounts = dbRepo.listConnectedAccounts() as any[];
       const match = accounts.find((a: any) => a.platform.startsWith(platform.split('_')[0]));
-      if (match) {
+      if (match && dbRepo.getOAuthToken(match.id)) {
         accountId = match.id;
       } else {
-        const newAcc = dbRepo.saveConnectedAccount({
-          id: `acc_${platform}_auto`,
-          userId: 'usr_creator_01',
-          platform: platform.split('_')[0] as any,
-          accountName: `Verified ${platform.replace('_', ' ').toUpperCase()} Channel`,
-          accountId: `act_${Date.now()}`,
-        });
-        accountId = (newAcc as any).id;
+        // Previously a token-less placeholder account was fabricated here; it then shadowed the real
+        // connection and made the channel look disconnected. Require a real connection instead.
+        return NextResponse.json(
+          { success: false, error: `Connect your ${platform.split('_')[0]} account before scheduling.` },
+          { status: 409 }
+        );
       }
     }
 

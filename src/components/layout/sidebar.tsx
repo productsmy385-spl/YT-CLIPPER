@@ -52,138 +52,25 @@ const navGroups: NavGroup[] = [
   {
     label: 'STUDIO',
     items: [
-      {
-        title: 'Dashboard',
-        href: '/',
-        icon: LayoutDashboard,
-      },
-      {
-        title: 'Media Library',
-        href: '/library',
-        icon: Film,
-        badge: 'Vault',
-        badgeVariant: 'seafoam',
-      },
-      {
-        title: 'Projects',
-        href: '/projects',
-        icon: FolderKanban,
-      },
-      {
-        title: 'Create Shorts',
-        href: '/projects/new',
-        icon: Upload,
-        badge: 'New',
-        badgeVariant: 'coral',
-      },
-      {
-        title: 'Highlights',
-        href: '/highlights',
-        icon: Flame,
-      },
-      {
-        title: 'Publishing Center',
-        href: '/publishing',
-        icon: Share2,
-        badge: 'Live',
-        badgeVariant: 'coral',
-      },
-      {
-        title: 'Content Rights',
-        href: '/rights',
-        icon: ShieldCheck,
-        badge: 'Verified',
-        badgeVariant: 'seafoam',
-      },
+      { title: 'Create Shorts', href: '/', icon: Upload },
+      { title: 'Projects', href: '/projects', icon: FolderKanban },
+      { title: 'Video Editor', href: '/editor', icon: Scissors },
     ],
   },
   {
-    label: 'EDITING',
+    label: 'LIBRARY',
     items: [
-      {
-        title: 'Video Editor',
-        href: '/editor',
-        icon: Scissors,
-      },
-      {
-        title: 'Media Library',
-        href: '/media',
-        icon: Film,
-      },
-    ],
-  },
-  {
-    label: 'ASSETS',
-    items: [
-      {
-        title: 'Meme Sounds',
-        href: '/assets?tab=memes',
-        icon: Smile,
-        badge: '1044',
-        badgeVariant: 'seafoam',
-      },
-      {
-        title: 'Music Library',
-        href: '/assets?tab=music',
-        icon: Music,
-      },
-      {
-        title: 'Sound Effects',
-        href: '/assets?tab=sfx',
-        icon: Volume2,
-      },
-    ],
-  },
-  {
-    label: 'AI SYSTEM',
-    items: [
-      {
-        title: 'AI Agents',
-        href: '/agents',
-        icon: Bot,
-        badge: '11 Online',
-        badgeVariant: 'seafoam',
-      },
-      {
-        title: 'Processing Jobs',
-        href: '/projects',
-        icon: Activity,
-      },
+      { title: 'Media Library', href: '/library', icon: Film },
+      { title: 'Music', href: '/assets?tab=music', icon: Music },
+      { title: 'Trash', href: '/media?tab=trash', icon: Trash2 },
     ],
   },
   {
     label: 'PUBLISHING',
     items: [
-      {
-        title: 'Publishing Center',
-        href: '/publishing',
-        icon: Share2,
-      },
-      {
-        title: 'Scheduled Posts',
-        href: '/publishing?tab=scheduled',
-        icon: Calendar,
-      },
-      {
-        title: 'Published',
-        href: '/publishing?tab=history',
-        icon: CheckCircle2,
-      },
-    ],
-  },
-  {
-    label: 'MANAGEMENT',
-    items: [
-      {
-        title: 'Trash',
-        href: '/media?tab=trash',
-        icon: Trash2,
-      },
-      {
-        title: 'Settings & Rights',
-        href: '/compliance',
-        icon: Settings,
-      },
+      { title: 'Publishing Center', href: '/publishing', icon: Share2 },
+      { title: 'Scheduled Posts', href: '/publishing?tab=scheduled', icon: Calendar },
+      { title: 'Published', href: '/publishing?tab=history', icon: CheckCircle2 },
     ],
   },
 ];
@@ -246,7 +133,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         {/* Quick Action Button & Status Bar */}
         <div className="p-3 space-y-2 border-b border-border">
           <Link
-            href="/projects/new"
+            href="/"
             onClick={onClose}
             className="flex items-center justify-center gap-1.5 w-full py-2 px-3 rounded-lg bg-gradient-to-r from-[#ff8882] to-[#ffc2b4] text-[#194350] font-bold text-xs shadow-sm hover:opacity-95 transition-opacity"
           >
@@ -254,13 +141,6 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             Create Short
           </Link>
 
-          <div className="flex items-center justify-between px-2.5 py-1 rounded-md bg-muted/70 text-[11px] font-medium text-muted-foreground">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-[#9dbeb8] animate-pulse" />
-              <span>11 Agents Active</span>
-            </div>
-            <span className="text-primary font-bold text-[10px]">LIVE</span>
-          </div>
         </div>
 
         {/* Clean Navigation Menus */}
@@ -304,21 +184,6 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           ))}
         </div>
 
-        {/* Side Panel Footer */}
-        <div className="border-t border-border p-3 text-[11px] text-muted-foreground space-y-1 bg-card">
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1">
-              <Cpu className="w-3 h-3 text-primary" /> Render Engine
-            </span>
-            <span className="font-medium text-foreground">1080×1920 60FPS</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1">
-              <Volume2 className="w-3 h-3 text-secondary" /> Audio Mode
-            </span>
-            <span className="font-medium text-foreground">Streamer Voice Safe</span>
-          </div>
-        </div>
       </aside>
     </>
   );

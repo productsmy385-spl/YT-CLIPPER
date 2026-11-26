@@ -12,3 +12,11 @@ storage/*.db-journal
 storage/*.db-wal
 storage/*.db-shm
 .railway
+storage/downloads/*
+storage/tmp/*
+# Secrets must come from Railway variables, never from the image
+.env
+.env.*
+!.env.example
+client_secret.json
+.tokens*.json

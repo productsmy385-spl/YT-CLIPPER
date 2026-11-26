@@ -1,39 +1,22 @@
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { dbRepo } from '@/db/repository';
+import { getProjectSnapshot } from '@/lib/studio/snapshot';
 
-export async function GET(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
-
-    // Check and recover stalled jobs automatically
-    dbRepo.checkAndRecoverStalledJobs(180);
-
-    const project = dbRepo.getProject(id);
-    if (!project) {
-      return NextResponse.json({ error: 'Project not found' }, { status: 404 });
-    }
-
-    const clips = dbRepo.getClipsByProject(id);
-    const highlights = dbRepo.getHighlightsByProject(id);
-    const agentLogs = dbRepo.getAgentLogs(id);
-    const copyrightReport = dbRepo.getCopyrightReportByProject(id);
-    const sourceVideo = dbRepo.getSourceVideoByProject(id);
-    const stages = dbRepo.getPipelineStages(id);
-
+    const snap = getProjectSnapshot(id);
+    if (!snap) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
+    // Legacy fields kept for the library / highlights pages.
     return NextResponse.json({
-      project,
-      sourceVideo,
-      clips,
-      highlights,
-      agentLogs,
-      copyrightReport,
-      stages,
+      ...snap,
+      clips: dbRepo.getClipsByProject(id),
+      agentLogs: dbRepo.getAgentLogs(id),
+      sourceVideo: dbRepo.getSourceVideoByProject(id),
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('[ProjectAPI] Read failed:', error);
+    return NextResponse.json({ error: 'Could not load the project.' }, { status: 500 });
   }
 }

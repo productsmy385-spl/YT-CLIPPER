@@ -45,10 +45,18 @@ export interface YouTubeStatusReport {
   canSchedule: boolean;
 }
 
-// AES-256-GCM Token Encryption at Rest
+// AES-256-GCM Token Encryption at Rest.
+// The key MUST be identical across every deploy, otherwise stored tokens become undecryptable and the channel
+// appears disconnected. The legacy default is kept only so tokens encrypted with it remain readable.
+const LEGACY_DEFAULT_KEY = 'gta6_shorts_ai_production_oauth_encryption_key_2026';
+let warnedAboutKey = false;
 function getEncryptionKey(): Buffer {
-  const secret = process.env.TOKEN_ENCRYPTION_KEY || 'gta6_shorts_ai_production_oauth_encryption_key_2026';
-  return crypto.createHash('sha256').update(secret).digest();
+  const secret = process.env.TOKEN_ENCRYPTION_KEY;
+  if (!secret && !warnedAboutKey) {
+    warnedAboutKey = true;
+    console.error('[YouTubeOAuth] TOKEN_ENCRYPTION_KEY is not set; using the legacy built-in key. Set a stable secret in Railway variables.');
+  }
+  return crypto.createHash('sha256').update(secret || LEGACY_DEFAULT_KEY).digest();
 }
 
 export function encryptToken(text: string): string {
@@ -62,37 +70,46 @@ export function encryptToken(text: string): string {
 
 export function decryptToken(encryptedData: string): string {
   if (!encryptedData) return '';
-  try {
-    const parts = encryptedData.split(':');
-    if (parts.length !== 3) return encryptedData; // Fallback if plain
-    const [ivHex, authTagHex, encHex] = parts;
-    const iv = Buffer.from(ivHex, 'hex');
-    const authTag = Buffer.from(authTagHex, 'hex');
-    const enc = Buffer.from(encHex, 'hex');
-    const decipher = crypto.createDecipheriv('aes-256-gcm', getEncryptionKey(), iv);
-    decipher.setAuthTag(authTag);
-    const decrypted = Buffer.concat([decipher.update(enc), decipher.final()]);
-    return decrypted.toString('utf8');
-  } catch (err) {
-    console.warn('[YouTubeOAuth] Decryption fallback:', err);
-    return encryptedData;
-  }
-}
-
-export function tryReadUploaderTokens(): any | null {
-  const candidates = [
-    path.resolve(process.cwd(), '..', 'youtube-uploader', '.tokens.json'),
-    path.resolve(process.cwd(), 'youtube-uploader', '.tokens.json'),
-    path.resolve('c:/Users/Gopala Krishna/OneDrive/Desktop/YB-STICKMAN/youtube-uploader/.tokens.json'),
-  ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) {
-      try {
-        return JSON.parse(fs.readFileSync(c, 'utf8'));
-      } catch {}
+  const parts = encryptedData.split(':');
+  if (parts.length !== 3) return encryptedData; // legacy plaintext record
+  const [ivHex, authTagHex, encHex] = parts;
+  const keys = [getEncryptionKey(), crypto.createHash('sha256').update(LEGACY_DEFAULT_KEY).digest()];
+  for (const key of keys) {
+    try {
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
+      decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
+      return Buffer.concat([decipher.update(Buffer.from(encHex, 'hex')), decipher.final()]).toString('utf8');
+    } catch {
+      // try next key. Records written by processes that ran without .env used the legacy key; they are
+      // re-encrypted with the configured key on the next refresh.
     }
   }
-  return null;
+  // Previously this returned the ciphertext and sent it to Google as a token. Fail clearly instead.
+  throw new OAuthReauthRequiredError(
+    'Stored YouTube credentials cannot be decrypted (TOKEN_ENCRYPTION_KEY changed between deploys). Reconnect once and keep the key stable.'
+  );
+}
+
+/** Raised when the user genuinely has to go through Google consent again. Anything else is treated as transient. */
+export class OAuthReauthRequiredError extends Error {
+  readonly reauthRequired = true;
+}
+
+const G = globalThis as any;
+G.__ytRefreshInFlight = G.__ytRefreshInFlight || new Map<string, Promise<string>>();
+G.__ytChannelCache = G.__ytChannelCache || new Map<string, { at: number; channel: YouTubeChannelProfile }>();
+const CHANNEL_CACHE_MS = 10 * 60 * 1000;
+
+/** The YouTube account whose credentials are most recently updated (ignores token-less placeholder rows). */
+function resolveYouTubeConnection(): { account: any; token: any } | null {
+  const accounts = (dbRepo.listConnectedAccounts() as any[]).filter((a) => a.platform === 'youtube');
+  let best: { account: any; token: any } | null = null;
+  for (const account of accounts) {
+    const token = dbRepo.getOAuthToken(account.id) as any;
+    if (!token) continue;
+    if (!best || String(token.updated_at) > String(best.token.updated_at)) best = { account, token };
+  }
+  return best;
 }
 
 export function loadOAuthConfig() {
@@ -234,18 +251,29 @@ export const youtubeOAuth = {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Token refresh failed: HTTP ${res.status} -> ${errText}`);
+      let code = '';
+      try { code = (await res.json()).error || ''; } catch {}
+      if (code === 'invalid_grant' || code === 'unauthorized_client' || code === 'invalid_client') {
+        throw new OAuthReauthRequiredError(
+          `Google rejected the stored refresh token (${code}). Common causes: access revoked in the Google account, ` +
+            `the OAuth consent screen is in "Testing" mode (Google expires refresh tokens after 7 days), ` +
+            `or the client secret changed. Reconnect once; publish the consent screen to "In production" to stop recurring expiry.`
+        );
+      }
+      throw new Error(`Token refresh temporarily failed: HTTP ${res.status}${code ? ` (${code})` : ''}`);
     }
 
     const data = await res.json();
     return {
       accessToken: data.access_token as string,
+      refreshToken: (data.refresh_token as string | undefined) || undefined, // Google may rotate it
       expiresIn: (data.expires_in || 3600) as number,
       tokenType: data.token_type || 'Bearer',
+      scope: data.scope as string | undefined,
     };
   },
 
@@ -296,21 +324,17 @@ export const youtubeOAuth = {
   },
 
   /**
-   * Save or update YouTube connection in database with encryption
+   * Persist a fresh connection. Keeps the existing refresh token when Google does not return a new one
+   * (it only does on first consent), and clears token-less YouTube placeholder rows that used to shadow it.
    */
   saveConnection(
     channel: YouTubeChannelProfile,
-    tokens: {
-      accessToken: string;
-      refreshToken?: string;
-      expiresIn: number;
-      scope: string;
-    }
+    tokens: { accessToken: string; refreshToken?: string; expiresIn: number; scope: string }
   ) {
     const accountId = `yt_${channel.id}`;
     const expiresAt = new Date(Date.now() + (tokens.expiresIn - 60) * 1000).toISOString();
+    const previous = dbRepo.getOAuthToken(accountId) as any;
 
-    // 1. Save connected social account record
     dbRepo.saveConnectedAccount({
       id: accountId,
       userId: 'usr_creator_01',
@@ -320,241 +344,166 @@ export const youtubeOAuth = {
       profileImageUrl: channel.thumbnailUrl || undefined,
     });
 
-    // 2. Encrypt tokens at rest and persist
+    const refreshTokenEncrypted = tokens.refreshToken
+      ? encryptToken(tokens.refreshToken)
+      : previous?.refresh_token_encrypted || undefined;
+    if (!refreshTokenEncrypted) {
+      console.error(`[YouTubeOAuth] Google returned no refresh token for ${channel.id}; the connection will need renewing when the access token expires.`);
+    }
+
     dbRepo.saveOAuthToken({
       id: `tok_${accountId}`,
       accountId,
       platform: 'youtube',
       accessTokenEncrypted: encryptToken(tokens.accessToken),
-      refreshTokenEncrypted: tokens.refreshToken ? encryptToken(tokens.refreshToken) : undefined,
+      refreshTokenEncrypted,
       tokenType: 'Bearer',
-      scope: tokens.scope,
+      scope: tokens.scope || previous?.scope || YOUTUBE_SCOPES.join(' '),
       expiresAt,
     });
 
-    console.log(`[YouTubeOAuth] ✓ Secured YouTube connection for channel: "${channel.title}" (${channel.id}). Token expires at ${expiresAt}`);
-  },
-
-  /**
-   * Retrieve a guaranteed-valid access token, automatically refreshing if expired
-   */
-  async getValidAccessToken(): Promise<string> {
-    const accounts = dbRepo.listConnectedAccounts() as any[];
-    let ytAccount = accounts.find((a: any) => a.platform === 'youtube');
-    let tokenRecord = ytAccount ? (dbRepo.getOAuthToken(ytAccount.id) as any) : null;
-
-    if (!tokenRecord) {
-      const uploaderTokens = tryReadUploaderTokens();
-      if (uploaderTokens?.access_token) {
-        const accountId = ytAccount?.id || 'acc_yt_creator_test';
-        ytAccount = dbRepo.saveConnectedAccount({
-          id: accountId,
-          userId: 'usr_creator_01',
-          platform: 'youtube',
-          accountName: 'Connected YouTube Channel',
-          accountId: 'yt_creator_chan_01',
-        });
-        dbRepo.saveOAuthToken({
-          id: `tok_${accountId}`,
-          accountId,
-          platform: 'youtube',
-          accessTokenEncrypted: encryptToken(uploaderTokens.access_token),
-          refreshTokenEncrypted: uploaderTokens.refresh_token ? encryptToken(uploaderTokens.refresh_token) : undefined,
-          tokenType: 'Bearer',
-          scope: uploaderTokens.scope || YOUTUBE_SCOPES.join(' '),
-          expiresAt: uploaderTokens.expires_at ? new Date(uploaderTokens.expires_at).toISOString() : new Date(Date.now() + 3600000).toISOString(),
-        });
-        tokenRecord = dbRepo.getOAuthToken(accountId);
+    for (const a of dbRepo.listConnectedAccounts() as any[]) {
+      if (a.platform === 'youtube' && a.id !== accountId && !dbRepo.getOAuthToken(a.id)) {
+        dbRepo.deleteConnectedAccount(a.id);
       }
     }
+    G.__ytChannelCache.set(accountId, { at: Date.now(), channel });
+    console.log(`[YouTubeOAuth] Connected channel ${channel.id}; access token valid until ${expiresAt}.`);
+  },
 
-    if (!ytAccount) {
-      throw new Error('No YouTube channel connected. Please connect your YouTube channel first.');
+  /** A valid access token for the connected channel, refreshing (once, de-duplicated) when near expiry. */
+  async getValidAccessToken(opts: { minValidityMs?: number } = {}): Promise<string> {
+    const conn = resolveYouTubeConnection();
+    if (!conn) throw new OAuthReauthRequiredError('No YouTube channel connected.');
+    const { account, token } = conn;
+    const minValidity = opts.minValidityMs ?? 2 * 60 * 1000;
+
+    const current = decryptToken(token.access_token_encrypted);
+    if (current && Date.now() < new Date(token.expires_at).getTime() - minValidity) return current;
+
+    const inflight = G.__ytRefreshInFlight.get(account.id);
+    if (inflight) return inflight;
+
+    const p = (async () => {
+      const refreshToken = decryptToken(token.refresh_token_encrypted || '');
+      if (!refreshToken) throw new OAuthReauthRequiredError('Access token expired and no refresh token is stored. Reconnect once.');
+      const refreshed = await this.refreshAccessToken(refreshToken);
+      dbRepo.saveOAuthToken({
+        id: token.id,
+        accountId: account.id,
+        platform: 'youtube',
+        accessTokenEncrypted: encryptToken(refreshed.accessToken),
+        refreshTokenEncrypted: refreshed.refreshToken ? encryptToken(refreshed.refreshToken) : token.refresh_token_encrypted,
+        tokenType: refreshed.tokenType,
+        scope: refreshed.scope || token.scope,
+        expiresAt: new Date(Date.now() + (refreshed.expiresIn - 60) * 1000).toISOString(),
+      });
+      console.log(`[YouTubeOAuth] Refreshed access token for ${account.account_id}.`);
+      return refreshed.accessToken;
+    })();
+    G.__ytRefreshInFlight.set(account.id, p);
+    try {
+      return await p;
+    } finally {
+      G.__ytRefreshInFlight.delete(account.id);
     }
+  },
 
-    if (!tokenRecord) {
-      throw new Error('OAuth token record missing for connected YouTube channel.');
+  /** Called by the background worker so tokens are renewed before anyone needs them. Never throws. */
+  async refreshIfExpiringSoon(): Promise<void> {
+    if (!resolveYouTubeConnection()) return;
+    try {
+      await this.getValidAccessToken({ minValidityMs: 15 * 60 * 1000 });
+      G.__ytLastRefreshError = null;
+    } catch (err: any) {
+      if (G.__ytLastRefreshError !== err.message) console.error(`[YouTubeOAuth] Background token refresh failed: ${err.message}`);
+      G.__ytLastRefreshError = err.message;
     }
+  },
 
-    const currentAccess = decryptToken(tokenRecord.access_token_encrypted);
-    const expiresAtMs = new Date(tokenRecord.expires_at).getTime();
-    const isStillValid = Date.now() < expiresAtMs - 120000; // 2 minute safety buffer
-
-    if (currentAccess && isStillValid) {
-      return currentAccess;
-    }
-
-    // Attempt token refresh
-    const refreshToken = decryptToken(tokenRecord.refresh_token_encrypted);
-    if (!refreshToken) {
-      throw new Error('Access token expired and no refresh token available. Re-authentication required.');
-    }
-
-    console.log('[YouTubeOAuth] Access token expired or near expiry. Refreshing with Google OAuth...');
-    const refreshed = await this.refreshAccessToken(refreshToken);
-
-    const newExpiresAt = new Date(Date.now() + (refreshed.expiresIn - 60) * 1000).toISOString();
-    dbRepo.saveOAuthToken({
-      id: tokenRecord.id,
-      accountId: ytAccount.id,
-      platform: 'youtube',
-      accessTokenEncrypted: encryptToken(refreshed.accessToken),
-      refreshTokenEncrypted: tokenRecord.refresh_token_encrypted, // keep existing encrypted refresh token
-      tokenType: refreshed.tokenType,
-      scope: tokenRecord.scope,
-      expiresAt: newExpiresAt,
-    });
-
-    return refreshed.accessToken;
+  /** The connected channel's id, or null. */
+  connectedChannelId(): string | null {
+    return resolveYouTubeConnection()?.account.account_id || null;
   },
 
   /**
-   * Health-check and return connection report with official 9 states
+   * Real connection status. Only a Google rejection (or missing/undecryptable credentials) reports the channel as
+   * disconnected; network blips and quota errors keep it connected and surface a warning instead. Channel details
+   * are cached for 10 minutes so status polling does not burn YouTube Data API quota.
    */
   async getStatusReport(): Promise<YouTubeStatusReport> {
     const now = new Date().toISOString();
-    const accounts = dbRepo.listConnectedAccounts() as any[];
-    let ytAccount = accounts.find((a: any) => a.platform === 'youtube');
-    let tokenRecord = ytAccount ? (dbRepo.getOAuthToken(ytAccount.id) as any) : null;
-
-    // Check youtube-uploader/.tokens.json fallback to sync existing desktop tokens
-    if (!tokenRecord) {
-      const uploaderTokens = tryReadUploaderTokens();
-      if (uploaderTokens?.access_token) {
-        const accountId = ytAccount?.id || 'acc_yt_creator_test';
-        ytAccount = dbRepo.saveConnectedAccount({
-          id: accountId,
-          userId: 'usr_creator_01',
-          platform: 'youtube',
-          accountName: 'Connected YouTube Channel',
-          accountId: 'yt_creator_chan_01',
-        });
-        dbRepo.saveOAuthToken({
-          id: `tok_${accountId}`,
-          accountId,
-          platform: 'youtube',
-          accessTokenEncrypted: encryptToken(uploaderTokens.access_token),
-          refreshTokenEncrypted: uploaderTokens.refresh_token ? encryptToken(uploaderTokens.refresh_token) : undefined,
-          tokenType: 'Bearer',
-          scope: uploaderTokens.scope || YOUTUBE_SCOPES.join(' '),
-          expiresAt: uploaderTokens.expires_at ? new Date(uploaderTokens.expires_at).toISOString() : new Date(Date.now() + 3600000).toISOString(),
-        });
-        tokenRecord = dbRepo.getOAuthToken(accountId);
-      }
+    const conn = resolveYouTubeConnection();
+    if (!conn) {
+      return { state: 'NOT_CONNECTED', connected: false, channel: null, scopes: [], lastChecked: now, canUpload: false, canSchedule: false };
     }
+    const { account, token } = conn;
+    const scopes = String(token.scope || '').split(' ').map((s) => s.trim()).filter(Boolean);
+    const stored: YouTubeChannelProfile = {
+      id: account.account_id,
+      title: account.account_name,
+      thumbnailUrl: account.profile_image_url,
+      connectedAt: account.created_at,
+      tokenExpiresAt: token.expires_at,
+    };
 
-    if (!ytAccount || !tokenRecord) {
+    if (!scopes.some((s) => s.includes('youtube.upload'))) {
       return {
-        state: 'NOT_CONNECTED',
-        connected: false,
-        channel: null,
-        scopes: [],
-        lastChecked: now,
-        canUpload: false,
-        canSchedule: false,
-      };
-    }
-
-    const scopes = (tokenRecord.scope || '')
-      .split(' ')
-      .map((s: string) => s.trim())
-      .filter(Boolean);
-
-    const hasUploadScope = scopes.some((s: string) => s.includes('youtube.upload') || s.includes('youtube'));
-    if (!hasUploadScope) {
-      return {
-        state: 'PERMISSION_MISSING',
-        connected: false,
-        channel: {
-          id: ytAccount.account_id,
-          title: ytAccount.account_name,
-          thumbnailUrl: ytAccount.profile_image_url,
-          canUpload: false,
-        },
-        scopes,
-        lastChecked: now,
-        error: 'Missing required upload permission (https://www.googleapis.com/auth/youtube.upload). Reconnect with full permissions.',
-        canUpload: false,
-        canSchedule: false,
+        state: 'PERMISSION_MISSING', connected: false, channel: { ...stored, canUpload: false }, scopes, lastChecked: now,
+        error: 'The upload permission was not granted. Reconnect and allow YouTube upload access.', canUpload: false, canSchedule: false,
       };
     }
 
     try {
       const accessToken = await this.getValidAccessToken();
-      const channel = await this.fetchChannel(accessToken);
-
+      let cached = G.__ytChannelCache.get(account.id);
+      if (!cached || Date.now() - cached.at > CHANNEL_CACHE_MS) {
+        try {
+          cached = { at: Date.now(), channel: await this.fetchChannel(accessToken) };
+          G.__ytChannelCache.set(account.id, cached);
+        } catch (err: any) {
+          console.error(`[YouTubeOAuth] Channel lookup failed (credentials still valid): ${String(err.message).slice(0, 200)}`);
+          cached = { at: 0, channel: stored };
+        }
+      }
+      const fresh = dbRepo.getOAuthToken(account.id) as any;
       return {
-        state: 'CONNECTED',
-        connected: true,
-        channel: {
-          ...channel,
-          connectedAt: ytAccount.created_at,
-          tokenExpiresAt: tokenRecord.expires_at,
-          canUpload: true,
-        },
-        scopes,
-        lastChecked: now,
-        canUpload: true,
-        canSchedule: true,
+        state: 'CONNECTED', connected: true,
+        channel: { ...stored, ...cached.channel, connectedAt: account.created_at, tokenExpiresAt: fresh?.expires_at, canUpload: true },
+        scopes, lastChecked: now, canUpload: true, canSchedule: true,
       };
     } catch (err: any) {
-      const errMsg = err.message || '';
-      if (errMsg.includes('expired') || errMsg.includes('invalid_grant')) {
+      if (err instanceof OAuthReauthRequiredError) {
+        console.error(`[YouTubeOAuth] Re-authorisation required for ${account.account_id}: ${err.message}`);
         return {
-          state: 'TOKEN_EXPIRED',
-          connected: false,
-          channel: {
-            id: ytAccount.account_id,
-            title: ytAccount.account_name,
-            thumbnailUrl: ytAccount.profile_image_url,
-            canUpload: false,
-          },
-          scopes,
-          lastChecked: now,
-          error: 'YouTube authorization expired. Please click Reconnect YouTube to renew access.',
-          canUpload: false,
-          canSchedule: false,
+          state: 'REAUTH_REQUIRED', connected: false, channel: { ...stored, canUpload: false }, scopes, lastChecked: now,
+          error: err.message, canUpload: false, canSchedule: false,
         };
       }
-
+      console.error(`[YouTubeOAuth] Transient status check failure: ${err.message}`);
       return {
-        state: 'CONNECTION_ERROR',
-        connected: false,
-        channel: {
-          id: ytAccount.account_id,
-          title: ytAccount.account_name,
-          thumbnailUrl: ytAccount.profile_image_url,
-          canUpload: false,
-        },
-        scopes,
-        lastChecked: now,
-        error: `YouTube verification check failed: ${errMsg}`,
-        canUpload: false,
-        canSchedule: false,
+        state: 'CONNECTED', connected: true, channel: { ...stored, canUpload: true }, scopes, lastChecked: now,
+        error: `Could not reach Google just now (${err.message}). The connection is kept and will retry automatically.`,
+        canUpload: true, canSchedule: true,
       };
     }
   },
 
-  /**
-   * Disconnect YouTube channel and revoke tokens
-   */
+  /** Explicit user action only: revoke at Google and delete the stored credentials. */
   async disconnect(): Promise<{ success: boolean }> {
-    const accounts = dbRepo.listConnectedAccounts() as any[];
-    const ytAccount = accounts.find((a: any) => a.platform === 'youtube');
-    if (ytAccount) {
-      const tokenRecord = dbRepo.getOAuthToken(ytAccount.id) as any;
-      if (tokenRecord) {
+    const conn = resolveYouTubeConnection();
+    for (const a of dbRepo.listConnectedAccounts() as any[]) {
+      if (a.platform !== 'youtube') continue;
+      if (conn && a.id === conn.account.id) {
         try {
-          const accessToken = decryptToken(tokenRecord.access_token_encrypted);
-          if (accessToken) {
-            await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(accessToken)}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            });
-          }
-        } catch {}
+          const t = decryptToken(conn.token.refresh_token_encrypted || '') || decryptToken(conn.token.access_token_encrypted);
+          if (t) await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(t)}`, { method: 'POST', signal: AbortSignal.timeout(10000) });
+        } catch (err: any) {
+          console.error(`[YouTubeOAuth] Revoke call failed (credentials deleted locally anyway): ${err.message}`);
+        }
       }
-      dbRepo.deleteConnectedAccount(ytAccount.id);
+      dbRepo.deleteConnectedAccount(a.id);
+      G.__ytChannelCache.delete(a.id);
     }
     return { success: true };
   },

@@ -11,7 +11,8 @@ export async function GET(req: NextRequest) {
   const host = req.headers.get('x-forwarded-host') || req.headers.get('host') || 'localhost:3000';
   const proto = req.headers.get('x-forwarded-proto') || (host.includes('localhost') ? 'http' : 'https');
   const redirectUri = `${proto}://${host}/api/youtube/callback`;
-  const returnBase = `${proto}://${host}/publishing?tab=accounts`;
+  const returnPath = req.cookies.get('yt_oauth_return')?.value || '/publishing?tab=accounts';
+  const returnBase = `${proto}://${host}${returnPath}${returnPath.includes('?') ? '' : '?yt=1'}`;
 
   if (error) {
     console.warn('[YouTubeCallbackAPI] OAuth cancelled or error returned from Google:', error);
@@ -20,6 +21,12 @@ export async function GET(req: NextRequest) {
 
   if (!code) {
     return NextResponse.redirect(`${returnBase}&error=${encodeURIComponent('No authorization code received from Google.')}`);
+  }
+
+  const expectedState = req.cookies.get('yt_oauth_state')?.value;
+  if (!expectedState || expectedState !== state) {
+    console.error('[YouTubeCallbackAPI] Rejected callback: OAuth state mismatch (expired or forged request).');
+    return NextResponse.redirect(`${returnBase}&error=${encodeURIComponent('The connection request expired. Please click Connect again.')}`);
   }
 
   try {

@@ -1,7 +1,11 @@
 import pg from 'pg';
 const { Pool } = pg;
 
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:RYTqWnGJDYAaIlrNfAsZCRGdSnQGLlku@metro.proxy.rlwy.net:28566/railway';
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  console.error('Set DATABASE_URL (never hard-code credentials in this file).');
+  process.exit(1);
+}
 
 console.log('Connecting to PostgreSQL:', DATABASE_URL.replace(/:[^:@]+@/, ':****@'));
 

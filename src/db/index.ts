@@ -2,9 +2,22 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { DB_PATH } from '../lib/app-paths.ts';
-import { replicateToPostgres, syncSQLiteFromPostgres, getPostgresPool } from './postgres.ts';
+import { replicateToPostgres, hydrateSQLiteFromPostgres, ensurePostgresSchema, getPostgresPool } from './postgres.ts';
 
 const internalDb = new DatabaseSync(DB_PATH);
+
+const pkCache = new Map<string, string[]>();
+function primaryKeyOf(table: string): string[] {
+  if (!pkCache.has(table)) {
+    try {
+      const cols = internalDb.prepare(`PRAGMA table_info(${table})`).all() as any[];
+      pkCache.set(table, cols.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name));
+    } catch {
+      pkCache.set(table, []);
+    }
+  }
+  return pkCache.get(table)!;
+}
 
 // Enable busy timeout FIRST so any concurrent worker waits up to 30s instead of throwing 'database is locked'
 try {
@@ -25,11 +38,7 @@ export const rawDb = {
     return {
       run(...params: any[]) {
         const result = stmt.run(...params);
-        if (isMutation) {
-          try {
-            replicateToPostgres(sql, params);
-          } catch {}
-        }
+        if (isMutation) replicateToPostgres(sql, params, primaryKeyOf);
         return result;
       },
       get(...params: any[]) {
@@ -738,10 +747,117 @@ export function reconcileUnverifiedClips(): { auditedCount: number; flaggedNeeds
 
 // Auto-run schema initialization on import
 initDatabase();
+initStudioTables();
 
-// Asynchronously hydrate from cloud PostgreSQL if DATABASE_URL is configured
-try {
-  syncSQLiteFromPostgres(internalDb).catch((err: any) => {
-    console.warn('[PostgreSQL] Async hydration notice:', err?.message);
-  });
-} catch {}
+/** Tables for the unified processing engine: durable job queue, media assets, shorts with edit documents, render history. */
+export function initStudioTables() {
+  rawDb.exec(`
+    CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      short_id TEXT,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 2,
+      payload_json TEXT,
+      progress INTEGER NOT NULL DEFAULT 0,
+      stage TEXT,
+      message TEXT,
+      error TEXT,
+      worker_id TEXT,
+      heartbeat_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs (project_id);
+
+    CREATE TABLE IF NOT EXISTS media_assets (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_ref TEXT,
+      video_id TEXT,
+      file_path TEXT NOT NULL,
+      file_size INTEGER,
+      checksum TEXT,
+      probe_json TEXT,
+      thumbnail_path TEXT,
+      waveform_json TEXT,
+      transcript_json TEXT,
+      analysis_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_media_assets_project ON media_assets (project_id);
+
+    CREATE TABLE IF NOT EXISTS shorts (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      rank INTEGER NOT NULL DEFAULT 0,
+      title TEXT NOT NULL,
+      description TEXT,
+      reason TEXT,
+      category TEXT,
+      score INTEGER,
+      start_time REAL NOT NULL,
+      end_time REAL NOT NULL,
+      transcript TEXT,
+      edit_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      output_path TEXT,
+      thumbnail_path TEXT,
+      qc_json TEXT,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_shorts_project ON shorts (project_id, rank);
+
+    CREATE TABLE IF NOT EXISTS renders (
+      id TEXT PRIMARY KEY,
+      short_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      job_id TEXT,
+      status TEXT NOT NULL,
+      output_path TEXT,
+      file_size INTEGER,
+      duration REAL,
+      edit_version INTEGER,
+      qc_json TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_renders_short ON renders (short_id, created_at);
+  `);
+  for (const col of ['source_type TEXT', 'settings_json TEXT', 'thumbnail_url TEXT', 'channel_name TEXT']) {
+    try { rawDb.exec(`ALTER TABLE projects ADD COLUMN ${col};`); } catch {}
+  }
+}
+
+/**
+ * Resolves once the durable PostgreSQL copy (if configured) has been mirrored and restored into SQLite.
+ * Runs once per process even though Next.js may load this module in several bundles.
+ * `instrumentation.ts` awaits it before the server accepts requests.
+ */
+const G = globalThis as any;
+export const dbReady: Promise<void> =
+  G.__gta6DbReady ||
+  (G.__gta6DbReady = (async () => {
+    if (!getPostgresPool()) {
+      console.log('[Database] DATABASE_URL not set: using local SQLite only (data will not survive container redeploys).');
+      return;
+    }
+    try {
+      await ensurePostgresSchema(internalDb);
+      const restored = await hydrateSQLiteFromPostgres(internalDb);
+      const total = Object.values(restored).reduce((a, b) => a + b, 0);
+      console.log(`[Database] Restored ${total} rows from PostgreSQL across ${Object.keys(restored).length} tables.`);
+    } catch (err: any) {
+      console.error('[Database] PostgreSQL schema sync / hydration failed:', err.message);
+    }
+  })());

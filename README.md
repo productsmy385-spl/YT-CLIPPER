@@ -52,7 +52,9 @@ connect your PC to production. Both need the same `SYNC_TOKEN` on Railway and in
   window open while you work, or use `npm run fetch-helper -- --once` for a single pass.
 - **Send to production.** A finished project in the local app shows a *Send to production* button. It uploads the
   project's files, then its rows, and production serves the copy (editing and re-rendering included). Sending again
-  replaces production's copy. Changes made on production do not flow back.
+  replaces production's copy. Changes made on production do not flow back. With `AUTO_SYNC_TO_PRODUCTION=true` the
+  local server does this by itself every 30 s for any finished project whose shorts changed (new project, editor save,
+  re-render). The project page shows whether production is up to date.
 
 Local runs should set `POSTGRES_DISABLED=true` (or leave `DATABASE_URL` empty) so they never write to production's
 database.

@@ -35,10 +35,22 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [pushTarget, setPushTarget] = useState<string | null>(null);
   const [pushResult, setPushResult] = useState<{ url: string; filesSent: number; bytesSent: number } | null>(null);
 
+  const [syncInfo, setSyncInfo] = useState<{ auto: boolean; status: { syncedAt: string; upToDate: boolean; error: string | null } | null } | null>(null);
+
   useEffect(() => {
     // "Send to production" only appears on a PC set up with PRODUCTION_URL + SYNC_TOKEN.
-    fetch('/api/sync/push').then((r) => r.json()).then((j) => setPushTarget(j.configured ? j.target : null)).catch(() => {});
-  }, []);
+    const load = () =>
+      fetch(`/api/sync/push?projectId=${encodeURIComponent(id)}`)
+        .then((r) => r.json())
+        .then((j) => {
+          setPushTarget(j.configured ? j.target : null);
+          setSyncInfo(j.configured ? { auto: j.auto, status: j.status } : null);
+        })
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 15000);
+    return () => clearInterval(t);
+  }, [id]);
 
   async function pushToProduction() {
     setBusy('push');
@@ -121,6 +133,15 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       </div>
 
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {syncInfo?.auto && pushTarget && shorts.some((s) => s.status === 'ready') && (
+        <p className={cn('text-xs', syncInfo.status?.error ? 'text-destructive' : 'text-muted-foreground')}>
+          {syncInfo.status?.error
+            ? `Not yet on ${pushTarget}: ${syncInfo.status.error} (retrying automatically)`
+            : syncInfo.status?.upToDate
+              ? `On ${pushTarget}, up to date (synced ${new Date(syncInfo.status.syncedAt).toLocaleTimeString()})`
+              : `Changes will be sent to ${pushTarget} automatically within a minute`}
+        </p>
+      )}
       {pushResult && (
         <p className="text-sm text-emerald-700 dark:text-emerald-400">
           Sent to production ({pushResult.filesSent} file{pushResult.filesSent === 1 ? '' : 's'}, {(pushResult.bytesSent / 1048576).toFixed(1)} MB).{' '}

@@ -2,9 +2,9 @@
 
 import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, CheckCircle2, Circle, Loader2, XCircle, RefreshCw, StopCircle, Download, Scissors, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Circle, Loader2, XCircle, RefreshCw, StopCircle, Download, Scissors, AlertTriangle, UploadCloud, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { STAGES, DURATION_PRESETS } from '@/pipeline/stages';
+import { STAGES, DURATION_PRESETS, AWAITING_MEDIA_STATUS } from '@/pipeline/stages';
 
 type Snapshot = {
   project: { id: string; title: string; status: string; progress: number; currentStage: string; error: string | null; sourceType: string; sourceUrl: string | null };
@@ -32,6 +32,29 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const [live, setLive] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pushTarget, setPushTarget] = useState<string | null>(null);
+  const [pushResult, setPushResult] = useState<{ url: string; filesSent: number; bytesSent: number } | null>(null);
+
+  useEffect(() => {
+    // "Send to production" only appears on a PC set up with PRODUCTION_URL + SYNC_TOKEN.
+    fetch('/api/sync/push').then((r) => r.json()).then((j) => setPushTarget(j.configured ? j.target : null)).catch(() => {});
+  }, []);
+
+  async function pushToProduction() {
+    setBusy('push');
+    setActionError(null);
+    setPushResult(null);
+    try {
+      const res = await fetch('/api/sync/push', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: id }) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'Sending failed');
+      setPushResult(j);
+    } catch (err: any) {
+      setActionError(err.message);
+    } finally {
+      setBusy(null);
+    }
+  }
 
   useEffect(() => {
     const es = new EventSource(`/api/projects/${id}/events`);
@@ -61,7 +84,8 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
 
   const { project, stages, job, shorts, shortJobs, asset } = snap;
   const running = job && (job.status === 'queued' || job.status === 'running');
-  const failed = project.status === 'error' || job?.status === 'failed';
+  const awaitingMedia = project.status === AWAITING_MEDIA_STATUS;
+  const failed = !awaitingMedia && (project.status === 'error' || job?.status === 'failed');
   const stageByKey = new Map(stages.map((s) => [s.key, s]));
   const aiWarnings = [asset?.ai?.audio?.error, asset?.ai?.video?.error].filter(Boolean) as string[];
 
@@ -88,10 +112,31 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
               {busy === 'retry' ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />} Retry
             </button>
           )}
+          {pushTarget && !running && !awaitingMedia && shorts.some((s) => s.status === 'ready') && (
+            <button onClick={pushToProduction} disabled={busy === 'push'} title={`Copy this project and its shorts to ${pushTarget}`} className="px-3 py-2 rounded-lg border text-sm font-semibold flex items-center gap-1.5 hover:bg-muted disabled:opacity-60">
+              {busy === 'push' ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />} {busy === 'push' ? 'Sending…' : 'Send to production'}
+            </button>
+          )}
         </div>
       </div>
 
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {pushResult && (
+        <p className="text-sm text-emerald-700 dark:text-emerald-400">
+          Sent to production ({pushResult.filesSent} file{pushResult.filesSent === 1 ? '' : 's'}, {(pushResult.bytesSent / 1048576).toFixed(1)} MB).{' '}
+          <a href={pushResult.url} target="_blank" rel="noreferrer" className="underline font-semibold">Open it there</a>
+        </p>
+      )}
+      {awaitingMedia && (
+        <div className="rounded-lg border border-amber-400/50 bg-amber-50 dark:bg-amber-950/20 p-3 text-sm flex gap-2">
+          <Clock className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <span>
+            YouTube blocks downloads from this server, so this video is waiting for the fetch helper on your PC. Run{' '}
+            <code className="px-1 rounded bg-muted">npm run fetch-helper</code> in the project folder on your computer; processing continues here
+            automatically once it has uploaded the video.
+          </span>
+        </div>
+      )}
 
       {(running || failed || project.status === 'cancelled' || !shorts.length) && (
         <section className="rounded-xl border bg-card p-4 md:p-5 space-y-4">

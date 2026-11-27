@@ -40,6 +40,23 @@ npm run dev             # http://localhost:3000
 
 Requires FFmpeg/FFprobe on PATH, plus yt-dlp (only for fetching from your own channel).
 
+## Working from your PC with production
+
+YouTube blocks video downloads from datacenter IPs such as Railway's, while your home connection works. Two features
+connect your PC to production. Both need the same `SYNC_TOKEN` on Railway and in your PC's `.env`, plus
+`PRODUCTION_URL` on the PC.
+
+- **Fetch helper.** Paste YouTube links on the production site. With `YOUTUBE_FETCH_VIA=helper` on Railway, the
+  project waits in *Acquiring video* until you run `npm run fetch-helper` on your PC. The helper downloads each waiting
+  video with yt-dlp and uploads it. Production then runs the AI agents, rendering and QC itself. Keep the helper
+  window open while you work, or use `npm run fetch-helper -- --once` for a single pass.
+- **Send to production.** A finished project in the local app shows a *Send to production* button. It uploads the
+  project's files, then its rows, and production serves the copy (editing and re-rendering included). Sending again
+  replaces production's copy. Changes made on production do not flow back.
+
+Local runs should set `POSTGRES_DISABLED=true` (or leave `DATABASE_URL` empty) so they never write to production's
+database.
+
 ## Tests
 
 ```bash

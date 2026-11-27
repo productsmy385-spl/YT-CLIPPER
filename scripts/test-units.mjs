@@ -114,3 +114,58 @@ test('regression: sound labels are stripped from non-Latin transcripts', () => {
   assert.equal(cleanTranscriptText('laughter'), '');
   assert.equal(cleanTranscriptText('Crash!'), '');
 });
+
+// ---- PC fetch helper / Send to production ---------------------------------------------------
+import { toPortablePath, fromPortablePath, safeRelative, mapRowPaths, checkSyncToken, isValidProjectId } from '../src/lib/sync/sync-core.ts';
+import { classifyYtDlpFailure } from '../src/lib/youtube/ytdlp.ts';
+
+test('storage paths become portable and re-root on another OS', () => {
+  const win = String.raw`C:\Users\me\app\storage`;
+  assert.equal(toPortablePath(String.raw`C:\Users\me\app\storage\projects\proj_1_a\source\s.mp4`, win), '@storage/projects/proj_1_a/source/s.mp4');
+  assert.equal(toPortablePath('c:/users/ME/app/storage/projects/x.jpg', win), '@storage/projects/x.jpg'); // Windows is case-insensitive
+  assert.equal(toPortablePath('/app/storage/projects/p/a.mp4', '/app/storage'), '@storage/projects/p/a.mp4');
+  assert.equal(toPortablePath('/app/storagex/a.mp4', '/app/storage'), '/app/storagex/a.mp4'); // prefix must end at a separator
+  assert.equal(toPortablePath('just text', win), 'just text');
+  assert.equal(fromPortablePath('@storage/projects/p/a.mp4', '/app/storage').replaceAll(String.fromCharCode(92), '/'),'/app/storage/projects/p/a.mp4');
+});
+test('portable paths cannot escape storage', () => {
+  assert.throws(() => fromPortablePath('@storage/../etc/passwd', '/app/storage'));
+  assert.throws(() => fromPortablePath('@storage/projects/C:/x', '/app/storage'));
+  assert.equal(safeRelative('projects/p/../../x'), null);
+  assert.equal(safeRelative(''), null);
+  assert.equal(safeRelative(String.raw`projects\p\a.mp4`), 'projects/p/a.mp4');
+});
+test('paths inside *_json columns are rewritten too', () => {
+  const row = mapRowPaths({ id: 'a', file_path: '/s/projects/p/a.mp4', analysis_json: JSON.stringify({ previewPath: '/s/projects/p/preview.mp4', n: 3 }), note: '{"x":1}' }, (s) => toPortablePath(s, '/s'));
+  assert.equal(row.file_path, '@storage/projects/p/a.mp4');
+  assert.deepEqual(JSON.parse(row.analysis_json), { previewPath: '@storage/projects/p/preview.mp4', n: 3 });
+  assert.equal(row.note, '{"x":1}');
+});
+test('sync token: required, long enough, exact match', () => {
+  const prev = process.env.SYNC_TOKEN;
+  try {
+    delete process.env.SYNC_TOKEN;
+    assert.equal(checkSyncToken('Bearer anything'), false);
+    process.env.SYNC_TOKEN = 'short';
+    assert.equal(checkSyncToken('Bearer short'), false);
+    process.env.SYNC_TOKEN = 'x'.repeat(32);
+    assert.equal(checkSyncToken(`Bearer ${'x'.repeat(32)}`), true);
+    assert.equal(checkSyncToken(`Bearer ${'x'.repeat(31)}y`), false);
+    assert.equal(checkSyncToken(`Basic ${'x'.repeat(32)}`), false);
+    assert.equal(checkSyncToken(null), false);
+  } finally {
+    if (prev === undefined) delete process.env.SYNC_TOKEN; else process.env.SYNC_TOKEN = prev;
+  }
+});
+test('project ids are validated before use in paths', () => {
+  assert.equal(isValidProjectId('proj_1764200000000_ab12c'), true);
+  assert.equal(isValidProjectId('proj_../../x'), false);
+  assert.equal(isValidProjectId('other_1'), false);
+});
+test('yt-dlp failures are classified (bot wall is not retried on the same server)', () => {
+  assert.equal(classifyYtDlpFailure("ERROR: [youtube] abc: Sign in to confirm you're not a bot."), 'bot_wall');
+  assert.equal(classifyYtDlpFailure('ERROR: unable to download video data: HTTP Error 429: Too Many Requests'), 'bot_wall');
+  assert.equal(classifyYtDlpFailure('ERROR: [youtube] abc: Private video. Sign in if you\'ve been granted access'), 'access');
+  assert.equal(classifyYtDlpFailure('ERROR: [youtube] abc: Sign in to confirm your age'), 'access');
+  assert.equal(classifyYtDlpFailure('ERROR: unable to download: Connection reset'), 'other');
+});

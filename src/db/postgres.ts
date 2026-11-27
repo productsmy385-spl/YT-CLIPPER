@@ -15,6 +15,8 @@ const { Pool } = pg;
  */
 
 export function resolvePostgresUrl(rawUrl?: string): string | null {
+  // POSTGRES_DISABLED=true forces SQLite-only (local runs: .env's DATABASE_URL points at production).
+  if (!rawUrl && process.env.POSTGRES_DISABLED === 'true') return null;
   const url = rawUrl || process.env.DATABASE_URL;
   if (!url) return null;
   // Outside Railway the private hostname is unreachable; use the public TCP proxy if one is configured.

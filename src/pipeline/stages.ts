@@ -29,3 +29,6 @@ export function overallProgress(key: StageKey, fraction: number): number {
 }
 
 export const DURATION_PRESETS = [15, 30, 45, 60] as const;
+
+/** Project status while a YouTube video waits for the PC fetch helper (this server cannot download it). */
+export const AWAITING_MEDIA_STATUS = 'awaiting_media';

@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start -H 0.0.0.0",
     "lint": "next lint",
-    "db:seed": "node scripts/seed.mjs"
+    "db:seed": "node scripts/seed.mjs",
+    "fetch-helper": "node scripts/fetch-helper.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

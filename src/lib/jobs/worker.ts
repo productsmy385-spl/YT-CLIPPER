@@ -4,7 +4,7 @@ import { dbRepo } from '../../db/repository.ts';
 import { rawDb } from '../../db/index.ts';
 import { STORAGE_UPLOADS_DIR, STORAGE_TMP_DIR } from '../app-paths.ts';
 import { claimNextJob, completeJob, failJob, isCancelled, recoverStaleJobs, type Job } from './queue.ts';
-import { runProcessProject, runRenderShort, runRegenerateShort, PipelineError } from '../../pipeline/pipeline.ts';
+import { runProcessProject, runRenderShort, runRegenerateShort, PipelineError, AwaitingMediaError } from '../../pipeline/pipeline.ts';
 import { youtubeOAuth } from '../youtube/oauth.ts';
 import * as store from '../studio/store.ts';
 
@@ -89,6 +89,12 @@ export function startWorker(opts: { concurrency?: number } = {}) {
           const s = store.getShort(job.short_id);
           if (s && s.status === 'rendering') store.updateShort(job.short_id, { status: s.outputPath ? 'ready' : 'draft' });
         }
+        return;
+      }
+      if (err instanceof AwaitingMediaError) {
+        // Parked, not failed: the PC fetch helper's upload re-queues the project. Never retried from here.
+        completeJob(job.id, err.message);
+        console.log(`[Worker] ⏸ ${job.id}: ${err.message}`);
         return;
       }
       const retryable = err instanceof PipelineError ? err.retryable : true;

@@ -4,12 +4,12 @@ import { dbRepo } from '../db/repository.ts';
 import { getProjectStoragePaths, STORAGE_TMP_DIR, STORAGE_UPLOADS_DIR, MUSIC_DIR } from '../lib/app-paths.ts';
 import { computeFileChecksum } from '../lib/video-ingestion.ts';
 import { probe, verifyDecodable, extractThumbnail, waveformPeaks, ffmpegWithProgress, type ProbeResult } from '../lib/media/ff.ts';
-import { inspectYouTubeVideo, acquireYouTubeVideo, AcquisitionError } from '../lib/youtube/media-source.ts';
+import { inspectYouTubeVideo, acquireYouTubeVideo, AcquisitionError, youtubeFetchMode } from '../lib/youtube/media-source.ts';
 import { renderEditDoc } from '../lib/render/renderer.ts';
 import { newId, totalOutputDuration, type EditDoc } from '../lib/render/edit-doc.ts';
 import { updateJobProgress, heartbeat, type Job } from '../lib/jobs/queue.ts';
 import * as store from '../lib/studio/store.ts';
-import { STAGES, overallProgress, type StageKey } from './stages.ts';
+import { STAGES, overallProgress, AWAITING_MEDIA_STATUS, type StageKey } from './stages.ts';
 import { throwIfAborted, type AgentContext } from './context.ts';
 import { VideoAnalysisAgent } from './agents/video-analysis-agent.ts';
 import { AudioIntelligenceAgent, type AudioIntelligenceOutput } from './agents/audio-intelligence-agent.ts';
@@ -24,6 +24,16 @@ export class PipelineError extends Error {
   constructor(message: string, retryable: boolean) {
     super(message);
     this.retryable = retryable;
+  }
+}
+
+/**
+ * Not a failure: this server cannot download the video, so the project waits for the PC fetch helper to upload it
+ * (PUT /api/helper/projects/[id]/source), which re-queues processing. The worker completes the job without retrying.
+ */
+export class AwaitingMediaError extends Error {
+  constructor(message: string) {
+    super(message);
   }
 }
 
@@ -134,9 +144,14 @@ export async function runProcessProject(job: Job, signal: AbortSignal, workerId:
       if (opts.sourceType === 'youtube') {
         const insp = inspection && !('error' in inspection) ? inspection : null;
         if (!insp) throw new PipelineError('YouTube inspection missing.', true);
+        const mode = youtubeFetchMode();
+        if (mode === 'helper') throw new AwaitingMediaError('Waiting for your PC fetch helper to download this video');
         try {
           filePath = await acquireYouTubeVideo(insp, path.join(paths.sourceDir, `source_${insp.videoId}.mp4`), (pct) => tracker.progress(pct / 100, `Fetching video: ${Math.round(pct)}%`), signal);
         } catch (err: any) {
+          if (err instanceof AcquisitionError && err.kind === 'bot_wall' && mode === 'auto') {
+            throw new AwaitingMediaError('YouTube blocked this server, so your PC fetch helper will download this video');
+          }
           throw new PipelineError(err.message, err instanceof AcquisitionError ? err.retryable : true);
         }
       } else {
@@ -293,7 +308,11 @@ export async function runProcessProject(job: Job, signal: AbortSignal, workerId:
     tracker.complete('completed', `${passed} short${passed === 1 ? '' : 's'} ready`);
     return `${passed} of ${results.length} shorts ready`;
   } catch (err: any) {
-    if (!signal.aborted) tracker.fail(err.message || String(err));
+    if (err instanceof AwaitingMediaError) {
+      // Leave "Acquire" active with the reason; the project is parked, not failed.
+      tracker.enter('acquiring', err.message); // unthrottled, unlike progress()
+      dbRepo.updateProjectStatus(projectId, AWAITING_MEDIA_STATUS, overallProgress('acquiring', 0), err.message, { stageStatus: 'ACTIVE', workerId });
+    } else if (!signal.aborted) tracker.fail(err.message || String(err));
     throw err;
   } finally {
     clearInterval(beat);

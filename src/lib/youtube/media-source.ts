@@ -1,8 +1,6 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
 import { youtubeOAuth, OAuthReauthRequiredError } from './oauth.ts';
 import { videoIngestionEngine } from '../video-ingestion.ts';
+import { downloadWithYtDlp, YtDlpError, type YtDlpFailureKind } from './ytdlp.ts';
 
 /**
  * YouTube media source.
@@ -161,30 +159,33 @@ export async function inspectYouTubeVideo(rawUrl: string): Promise<YouTubeInspec
 // Acquisition (only for inspections with canAcquire = true)
 // ---------------------------------------------------------------------------------------------
 
-function resolveYtDlp(): { cmd: string; prefix: string[] } | null {
-  const candidates: Array<{ cmd: string; prefix: string[] }> = [];
-  if (process.env.YTDLP_PATH) candidates.push({ cmd: process.env.YTDLP_PATH, prefix: [] });
-  candidates.push({ cmd: '/usr/local/bin/yt-dlp', prefix: [] }, { cmd: 'yt-dlp', prefix: [] });
-  candidates.push({ cmd: process.platform === 'win32' ? 'python' : 'python3', prefix: ['-m', 'yt_dlp'] });
-  for (const c of candidates) {
-    if (c.cmd.startsWith('/') && !fs.existsSync(c.cmd)) continue;
-    const r = spawnSync(c.cmd, [...c.prefix, '--version'], { encoding: 'utf8', timeout: 15000 });
-    if (r.status === 0) return c;
-  }
-  return null;
-}
-
 export class AcquisitionError extends Error {
   readonly retryable: boolean;
-  constructor(message: string, retryable: boolean) {
+  readonly kind: YtDlpFailureKind;
+  constructor(message: string, retryable: boolean, kind: YtDlpFailureKind = 'other') {
     super(message);
     this.retryable = retryable;
+    this.kind = kind;
   }
 }
 
 /**
+ * Where YouTube media is downloaded (YOUTUBE_FETCH_VIA):
+ * - server: on this server only (the original behaviour).
+ * - helper: never on this server; the project waits for the PC fetch helper (scripts/fetch-helper.mjs). Use on
+ *   Railway, whose datacenter IPs YouTube blocks, so no time is wasted on an attempt that cannot succeed.
+ * - auto (default): try this server; if YouTube blocks its IP, hand the project to the PC fetch helper.
+ * The helper path needs SYNC_TOKEN (the helper authenticates with it); without it, "helper"/"auto" behave as "server".
+ */
+export function youtubeFetchMode(): 'server' | 'helper' | 'auto' {
+  if (!process.env.SYNC_TOKEN) return 'server';
+  const v = (process.env.YOUTUBE_FETCH_VIA || 'auto').toLowerCase();
+  return v === 'server' || v === 'helper' ? v : 'auto';
+}
+
+/**
  * Download a video that inspectYouTubeVideo cleared to `destFile` as H.264/AAC MP4 (≤1080p).
- * Progress is reported 0..100. Throws AcquisitionError with a user-readable message.
+ * Progress is reported 0..100. Throws AcquisitionError with a user-readable message and a failure kind.
  */
 export async function acquireYouTubeVideo(
   inspection: YouTubeInspection,
@@ -193,84 +194,21 @@ export async function acquireYouTubeVideo(
   signal?: AbortSignal
 ): Promise<string> {
   if (!inspection.canAcquire) {
-    throw new AcquisitionError(inspection.message || 'This video cannot be fetched.', false);
+    throw new AcquisitionError(inspection.message || 'This video cannot be fetched.', false, 'access');
   }
-  const tool = resolveYtDlp();
-  if (!tool) throw new AcquisitionError('The media fetcher (yt-dlp) is not installed on this server.', false);
-
-  fs.mkdirSync(path.dirname(destFile), { recursive: true });
-  const tmpTemplate = destFile.replace(/\.mp4$/i, '') + '.part.%(ext)s';
-  const args = [
-    ...tool.prefix,
-    '--no-playlist',
-    '--newline',
-    '--js-runtimes', 'node',
-    '-f', 'bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b',
-    '--merge-output-format', 'mp4',
-    '-o', tmpTemplate,
-    inspection.url,
-  ];
-  const ffmpeg = process.env.FFMPEG;
-  if (ffmpeg && path.isAbsolute(ffmpeg)) args.splice(tool.prefix.length, 0, '--ffmpeg-location', ffmpeg);
-
-  const output = await new Promise<string>((resolve, reject) => {
-    const child = spawn(tool.cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderrTail = '';
-    let finalPath = '';
-    const onAbort = () => child.kill('SIGKILL');
-    signal?.addEventListener('abort', onAbort, { once: true });
-    const timer = setTimeout(() => child.kill('SIGKILL'), Number(process.env.YOUTUBE_ACQUISITION_TIMEOUT_MS || 45 * 60 * 1000));
-
-    child.stdout.on('data', (buf) => {
-      for (const line of buf.toString().split(/\r?\n/)) {
-        const pct = /\[download\]\s+(\d+(?:\.\d+)?)%/.exec(line);
-        if (pct) onProgress(Math.min(99, Number(pct[1])));
-        const merged = /\[Merger\] Merging formats into "(.+)"/.exec(line) || /\[download\] (.+) has already been downloaded/.exec(line);
-        if (merged) finalPath = merged[1];
-        const dest = /\[download\] Destination: (.+)/.exec(line);
-        if (dest && !finalPath) finalPath = dest[1];
-      }
+  try {
+    return await downloadWithYtDlp(inspection.url, destFile, onProgress, {
+      signal,
+      ffmpegPath: process.env.FFMPEG,
+      timeoutMs: Number(process.env.YOUTUBE_ACQUISITION_TIMEOUT_MS || 45 * 60 * 1000),
     });
-    child.stderr.on('data', (buf) => {
-      stderrTail = (stderrTail + buf.toString()).slice(-2000);
-    });
-    child.on('error', (err) => {
-      clearTimeout(timer);
-      reject(new AcquisitionError(`Could not start the media fetcher: ${err.message}`, false));
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      if (signal?.aborted) return reject(new AcquisitionError('Cancelled.', false));
-      if (code !== 0) {
-        const errLine = stderrTail.split('\n').reverse().find((l) => l.includes('ERROR')) || stderrTail.trim().split('\n').pop() || '';
-        if (/confirm your age|members-only|join this channel|Private video|This video is private|video is unavailable/i.test(stderrTail)) {
-          return reject(new AcquisitionError('This video needs a signed-in YouTube account (age-restricted, members-only, private or removed), so it cannot be fetched. Add the video file instead.', false));
-        }
-        const botWall = /Sign in to confirm|not a bot|HTTP Error 429/i.test(stderrTail);
-        return reject(
-          new AcquisitionError(
-            botWall
-              ? 'YouTube refused the download from this server (it rate-limits datacenter IPs). Retry later, or add the file.'
-              : `Fetching the video failed: ${errLine.replace(/^ERROR:\s*/, '').slice(0, 300)}`,
-            true
-          )
-        );
-      }
-      resolve(finalPath);
-    });
-  });
-
-  // Locate the merged file and move it to the destination.
-  const dir = path.dirname(destFile);
-  const stem = path.basename(destFile).replace(/\.mp4$/i, '') + '.part.';
-  const produced = output && fs.existsSync(output)
-    ? output
-    : fs.readdirSync(dir).map((f) => path.join(dir, f)).find((f) => path.basename(f).startsWith(stem) && /\.(mp4|mkv|webm)$/i.test(f));
-  if (!produced) throw new AcquisitionError('The fetcher finished but produced no video file.', true);
-  fs.renameSync(produced, destFile);
-  onProgress(100);
-  return destFile;
+  } catch (err: any) {
+    if (!(err instanceof YtDlpError)) throw new AcquisitionError(err.message || String(err), true);
+    // A blocked IP stays blocked: retrying from the same server only burns the attempt budget.
+    const retryable = err.kind === 'other';
+    const message = err.kind === 'bot_wall' ? 'YouTube refused the download from this server (it blocks datacenter IPs). Add the file, or run the PC fetch helper.' : err.message;
+    throw new AcquisitionError(message, retryable, err.kind);
+  }
 }
 
 export { OAuthReauthRequiredError };
